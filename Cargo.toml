@@ -1,0 +1,7 @@
+[workspace]
+
+# TODO extract simple-wrapper crates to their own repo
+members = [
+    "cosmic-applet-host",
+    "cosmic-applet-host-config"
+]
