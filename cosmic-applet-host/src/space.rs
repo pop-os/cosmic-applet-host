@@ -77,6 +77,7 @@ use smithay::{
         SERIAL_COUNTER,
     },
 };
+use smithay::backend::renderer::buffer_dimensions;
 use wayland_egl::WlEglSurface;
 use xdg_shell_wrapper::{
     client_state::{Env, Focus},
@@ -98,6 +99,9 @@ pub struct ActiveApplet {
     pub(crate) layer_shell_wl_surface: Attached<c_wl_surface::WlSurface>,
     pub(crate) w_accumulated_damage: Vec<Vec<Rectangle<i32, Physical>>>,
     pub(crate) popups: Vec<Popup>,
+
+    pub(crate) egl_display: Option<EGLDisplay>,
+    pub(crate) renderer: Option<Gles2Renderer>,
     // tracking for drawing
     pub(crate) pending_dimensions: Option<Size<i32, Logical>>,
     pub(crate) full_clear: bool,
@@ -119,10 +123,10 @@ impl ActiveApplet {
         &mut self,
         log: Logger,
         c_display: &client::Display,
-        renderer: &Gles2Renderer,
-        egl_display: &EGLDisplay,
+        // renderer: &Gles2Renderer,
+        // egl_display: &EGLDisplay,
     ) -> bool {
-        // dbg!(&self.next_render_event);
+        dbg!(&self.next_render_event);
         match self.next_render_event.take() {
             Some(SpaceEvent::Quit) => {
                 return false;
@@ -135,18 +139,41 @@ impl ActiveApplet {
             }) => {
                 self.full_clear = true;
                 if first {
-                    self.dimensions = (width as i32, height as i32).into();
-                    // println!("first configure for client");
-                    // dbg!((width, height));
                     let client_egl_surface = ClientEglSurface {
-                        wl_egl_surface: WlEglSurface::new(&self.layer_shell_wl_surface, width, height),
+                        wl_egl_surface: WlEglSurface::new(
+                            &self.layer_shell_wl_surface,
+                            width,
+                            height,
+                        ),
                         display: c_display.clone(),
                     };
+                    let egl_display = EGLDisplay::new(&client_egl_surface, log.clone())
+                        .expect("Failed to initialize EGL display");
 
-                    println!("making egl surface");
+                    let egl_context = EGLContext::new_with_config(
+                        &egl_display,
+                        GlAttributes {
+                            version: (3, 0),
+                            profile: None,
+                            debug: cfg!(debug_assertions),
+                            vsync: false,
+                        },
+                        Default::default(),
+                        log.clone(),
+                    )
+                        .expect("Failed to initialize EGL context");
+
+                    let renderer = unsafe {
+                        Gles2Renderer::new(egl_context, log.clone())
+                            .expect("Failed to initialize EGL Surface")
+                    };
+                    trace!(log, "{:?}", unsafe {
+                        SwapInterval(egl_display.get_display_handle().handle, 0)
+                    });
+
                     let egl_surface = Rc::new(
                         EGLSurface::new(
-                            egl_display,
+                            &egl_display,
                             renderer
                                 .egl_context()
                                 .pixel_format()
@@ -157,7 +184,10 @@ impl ActiveApplet {
                         )
                             .expect("Failed to initialize EGL Surface"),
                     );
+
+                    self.renderer.replace(renderer);
                     self.egl_surface.replace(egl_surface);
+                    self.egl_display.replace(egl_display);
                 }
                 else {
                     self.egl_surface
@@ -319,6 +349,13 @@ impl AppletHostSpace {
         let log_clone = self.log.clone().unwrap();
 
         for mut active_applet in &mut self.active_applets {
+            dbg!(&active_applet);
+
+            let renderer = if let Some(r) = active_applet.renderer.as_mut() {
+                r
+            } else {
+                continue;
+            };
             let w = if let Some(w) = self
                 .space
                 .window_for_surface(&active_applet.s_wl_surface, WindowSurfaceType::TOPLEVEL)
@@ -371,7 +408,7 @@ impl AppletHostSpace {
                             active_applet.dimensions.to_physical(1),
                         ));
                     }
-
+                    dbg!(&damage);
                     let _ = renderer.unbind();
                     renderer
                         .bind(active_applet.egl_surface.as_ref().unwrap().clone())
@@ -400,7 +437,7 @@ impl AppletHostSpace {
                             }
                         },
                     );
-                    self.egl_surface
+                    active_applet.egl_surface
                         .as_ref()
                         .unwrap()
                         .swap_buffers(Some(&mut damage))
@@ -567,7 +604,7 @@ impl AppletHostSpace {
             });
         if let Some((c_id, s_wl_surface, dim)) = dim {
             let dimensions = dim.size;
-
+            dbg!(dimensions);
             let layer_surface = self.layer_shell.as_ref().unwrap().get_layer_surface(
                 &c_surface,
                 self.output.as_ref().map(|o| &o.0),
@@ -650,6 +687,8 @@ impl AppletHostSpace {
                 w_accumulated_damage: vec![],
                 s_wl_surface: s_wl_surface.clone(),
                 popups: Default::default(),
+                egl_display: None,
+                renderer: None,
                 pending_dimensions: None,
                 full_clear: true,
                 should_render: false,
@@ -773,14 +812,13 @@ impl WrapperSpace for AppletHostSpace {
             a.handle_events(
                 self.log.as_ref().unwrap().clone(),
                 self.c_display.as_ref().unwrap(),
-                self.renderer.as_ref().unwrap(),
-                self.egl_display.as_ref().unwrap()
+                // self.renderer.as_ref().unwrap(),
+                // self.egl_display.as_ref().unwrap()
             )
         });
-
-        if should_render {
+        // if should_render {
             let _ = self.render(time);
-        }
+        // }
 
         self.last_dirty.unwrap_or_else(|| self.start)
     }
@@ -1151,10 +1189,10 @@ impl WrapperSpace for AppletHostSpace {
         self.next_space_event = next_render_event;
         self.layer_shell_wl_surface.replace(c_surface);
         self.layer_surface.replace(layer_surface);
+        self.layer_shell.replace(layer_shell);
         self.focused_surface = focused_surface.clone();
         self.output = output.cloned().zip(output_info.cloned());
         self.pool.replace(pool);
-        self.layer_shell.replace(layer_shell);
         self.c_display.replace(c_display);
 
         Ok(())

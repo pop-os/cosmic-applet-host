@@ -72,8 +72,6 @@ fn main() -> Result<()> {
                     Event::Msg(AppletHostEvent::Name(name)) => {
                         let env_handle = state.0.env_handle();
                         let c_surface = env_handle.create_surface();
-                        let layer_shell =
-                            env_handle.require_global::<zwlr_layer_shell_v1::ZwlrLayerShellV1>();
                         let _ = state.0.space.toggle_applet(&name, c_surface);
                     }
                     Event::Closed => {
