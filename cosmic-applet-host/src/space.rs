@@ -516,7 +516,7 @@ impl AppletHostSpace {
         dbg!(&self.clients);
         dbg!(&dim);
         if let Some((c_id, s_wl_surface, dim)) = dim {
-            let dimensions = self.constrain_dim((dim.size.w, dim.size.h).into(), applet_name);
+            let dimensions = dim.size;
 
             let layer_surface = self.layer_shell.as_ref().unwrap().get_layer_surface(
                 &c_surface,
@@ -580,13 +580,12 @@ impl AppletHostSpace {
 
             dbg!(&self.c_display);
             println!("creating client egl surface");
+            dbg!(dimensions);
             let client_egl_surface = ClientEglSurface {
-                wl_egl_surface: WlEglSurface::new(&c_surface, dim.size.w, dim.size.h),
+                wl_egl_surface: WlEglSurface::new(&c_surface, dimensions.w, dimensions.h),
                 display: self.c_display.as_ref().unwrap().clone(),
             };
-            dbg!(&client_egl_surface);
 
-            println!("creating egl surface");
             let egl_context = self.renderer.as_ref().unwrap().egl_context();
             let egl_surface = Rc::new(
                 EGLSurface::new(
