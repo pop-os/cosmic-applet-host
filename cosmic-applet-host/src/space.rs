@@ -123,7 +123,6 @@ impl ActiveApplet {
         renderer: &Gles2Renderer,
         egl_display: &EGLDisplay,
     ) -> bool {
-        dbg!(&self.next_render_event);
         match self.next_render_event.take() {
             Some(SpaceEvent::Quit) => {
                 return false;
@@ -134,6 +133,7 @@ impl ActiveApplet {
                 height,
                 serial: _serial,
             }) => {
+                self.dimensions = (width, height).into();
                 self.full_clear = true;
                 if first {
                     let client_egl_surface = ClientEglSurface {
@@ -182,7 +182,6 @@ impl ActiveApplet {
             }
             None => {
                 if let Some(d) = self.pending_dimensions.take() {
-                    println!("HANDLING PENDING DIMENSTIONS");
                     self.layer_surface
                         .set_size(d.w.try_into().unwrap(), d.h.try_into().unwrap());
                     self.layer_shell_wl_surface.commit();
@@ -308,8 +307,6 @@ impl AppletHostSpace {
         let log_clone = self.log.clone().unwrap();
 
         for mut active_applet in &mut self.active_applets {
-            dbg!(&active_applet);
-
             let w = if let Some(w) = self
                 .space
                 .window_for_surface(&active_applet.s_wl_surface, WindowSurfaceType::TOPLEVEL)
@@ -1166,7 +1163,6 @@ impl WrapperSpace for AppletHostSpace {
     fn keyboard_focus_lost(&mut self) {
         self.close_popups();
         self.active_applets.retain(|a| !a.config.hide_on_focus_loss);
-        dbg!(self.active_applets.len());
     }
 }
 
