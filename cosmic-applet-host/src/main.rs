@@ -43,6 +43,7 @@ fn main() -> Result<()> {
         }
     };
 
+
     let event_loop = calloop::EventLoop::try_new()?;
     let (tx, rx) = calloop::channel::sync_channel(100);
     std::thread::spawn(move || -> anyhow::Result<()> {

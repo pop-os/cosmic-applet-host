@@ -132,6 +132,8 @@ pub struct AppletConfig {
     pub width: Option<Range<u32>>,
     pub height: Option<Range<u32>>,
     pub transition: Option<Transition>,
+    pub hide_shortcuts: Vec<String>,
+    pub hide_on_focus_loss: bool,
 }
 
 impl Default for AppletConfig {
@@ -148,6 +150,8 @@ impl Default for AppletConfig {
                 transition_time: 200,
                 handle_size: 4,
             }),
+            hide_shortcuts: vec![],
+            hide_on_focus_loss: true,
         }
     }
 }
@@ -182,9 +186,11 @@ impl Default for AppletHostConfig {
     fn default() -> Self {
         let mut app_library_applet = AppletConfig::default();
         app_library_applet.name = "com.system76.CosmicAppLibrary".into();
+        let mut launcher_applet = AppletConfig::default();
+        launcher_applet.name = "com.system76.CosmicLauncher".into();
         Self {
             name: "".to_string(),
-            applets: vec![app_library_applet],
+            applets: vec![app_library_applet, launcher_applet],
             output: None,
         }
     }
@@ -202,7 +208,7 @@ impl AppletHostConfig {
         let mut configs = Self::configs();
         configs.insert(name.into(), AppletHostConfig::default());
         let xdg = BaseDirectories::new()?;
-        let f = xdg.place_config_file("simple-wrapper/config.ron").unwrap();
+        let f = xdg.place_config_file("cosmic-applet-host/config.ron").unwrap();
         let f = File::create(f)?;
         ron::ser::to_writer_pretty(&f, &configs, ron::ser::PrettyConfig::default())?;
         return Ok(());
@@ -210,7 +216,7 @@ impl AppletHostConfig {
 
     fn configs() -> HashMap<String, Self> {
         match BaseDirectories::new()
-            .map(|dirs| dirs.find_config_file("simple-wrapper/config.ron"))
+            .map(|dirs| dirs.find_config_file("cosmic-applet-host/config.ron"))
             .map(|c| c.map(|c| File::open(c)))
             .map(|file| file.map(|file| ron::de::from_reader::<_, HashMap<String, Self>>(file?)))
         {
