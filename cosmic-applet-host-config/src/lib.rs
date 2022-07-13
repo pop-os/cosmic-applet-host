@@ -142,7 +142,7 @@ impl Default for AppletConfig {
             name: "".to_string(),
             anchor: Anchor::Center,
             layer: Layer::Top,
-            keyboard_interactivity: KeyboardInteractivity::OnDemand,
+            keyboard_interactivity: KeyboardInteractivity::Exclusive,
             width: None,
             height: None,
             transition: Some(Transition {

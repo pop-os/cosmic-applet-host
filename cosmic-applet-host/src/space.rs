@@ -406,7 +406,7 @@ impl AppletHostSpace {
             }) {
                 let _ = renderer.unbind();
                 renderer
-                    .bind(p.egl_surface.clone())
+                    .bind(p.egl_surface.as_ref().unwrap().clone())
                     .expect("Failed to bind surface to GL");
                 let p_bbox = bbox_from_surface_tree(p.s_surface.wl_surface(), (0, 0));
                 let cur_damage = if active_applet.full_clear {
@@ -421,7 +421,7 @@ impl AppletHostSpace {
                 };
 
                 if let Some(mut damage) =
-                    Self::damage_for_buffer(cur_damage, &mut p.accumulated_damage, &p.egl_surface)
+                    Self::damage_for_buffer(cur_damage, &mut p.accumulated_damage, p.egl_surface.as_ref().unwrap())
                 {
                     if damage.is_empty() {
                         damage.push(p_bbox.to_physical(1));
@@ -446,7 +446,7 @@ impl AppletHostSpace {
                             );
                         },
                     );
-                    p.egl_surface
+                    p.egl_surface.as_ref().unwrap()
                         .swap_buffers(Some(&mut damage))
                         .expect("Failed to swap buffers.");
                     p.dirty = false;
@@ -555,6 +555,7 @@ impl AppletHostSpace {
                 })
             }).cloned();
         if let Some(w) = w {
+            self.focused_surface.replace(Some(w.toplevel().wl_surface().clone()));
             self.space.raise_window(&w, true);
             let s_wl_surface = w.toplevel().wl_surface();
             let dimensions = w.bbox().size;
@@ -607,6 +608,7 @@ impl AppletHostSpace {
                             height
                         );
                         layer_surface.ack_configure(serial);
+
                         let first = match next {
                             Some(SpaceEvent::Configure { first, .. }) => first,
                             Some(SpaceEvent::WaitConfigure { first, .. }) => first,
@@ -672,7 +674,7 @@ impl WrapperSpace for AppletHostSpace {
 
         self.active_applets.retain_mut(|a| {
             a.popups
-                .retain_mut(|p: &mut Popup| p.handle_events(&mut self.popup_manager));
+                .retain_mut(|p: &mut Popup| p.handle_events(&mut self.popup_manager, self.renderer.as_ref().unwrap().egl_context(), self.egl_display.as_ref().unwrap(), self.c_display.as_ref().unwrap()));
             a.handle_events(
                 self.log.as_ref().unwrap().clone(),
                 self.c_display.as_ref().unwrap(),
@@ -796,7 +798,7 @@ impl WrapperSpace for AppletHostSpace {
         //must be done after role is assigned as popup
         c_wl_surface.commit();
 
-        let cur_popup_state = Rc::new(Cell::new(Some(PopupState::WaitConfigure)));
+        let cur_popup_state = Rc::new(Cell::new(Some(PopupState::WaitConfigure(true))));
         c_xdg_surface.quick_assign(move |c_xdg_surface, e, _| {
             if let xdg_surface::Event::Configure { serial, .. } = e {
                 c_xdg_surface.ack_configure(serial);
@@ -819,7 +821,13 @@ impl WrapperSpace for AppletHostSpace {
                 } => {
                     if popup_state.get() != Some(PopupState::Closed) {
                         let _ = s_popup_surface.send_configure();
+                        let first = match popup_state.get() {
+                            Some(PopupState::Configure { first, ..}) => first,
+                            Some(PopupState::WaitConfigure (first)) => first,
+                            _ => false,
+                        };
                         popup_state.set(Some(PopupState::Configure {
+                            first,
                             x,
                             y,
                             width,
@@ -841,26 +849,12 @@ impl WrapperSpace for AppletHostSpace {
             display: self.c_display.as_ref().unwrap().clone(),
         };
 
-        let egl_context = self.renderer.as_ref().unwrap().egl_context();
-        let egl_surface = Rc::new(
-            EGLSurface::new(
-                &self.egl_display.as_ref().unwrap(),
-                egl_context
-                    .pixel_format()
-                    .expect("Failed to get pixel format from EGL context "),
-                egl_context.config_id(),
-                client_egl_surface,
-                self.log.clone(),
-            )
-            .expect("Failed to initialize EGL Surface"),
-        );
-
         active_applet.popups.push(Popup {
             c_popup,
             c_xdg_surface,
-            c_wl_surface: c_wl_surface,
+            c_wl_surface,
             s_surface,
-            egl_surface,
+            egl_surface: None,
             dirty: false,
             popup_state: cur_popup_state,
             position: (0, 0).into(),

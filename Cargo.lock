@@ -679,9 +679,9 @@ checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
 
 [[package]]
 name = "memmap2"
-version = "0.3.1"
+version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00b6c2ebff6180198788f5db08d7ce3bc1d0b617176678831a7510825973e357"
+checksum = "3a79b39c93a7a5a27eeaf9a23b5ff43f1b9e0ad6b1cdd441140ae53c35613fc7"
 dependencies = [
  "libc",
 ]
@@ -1148,7 +1148,7 @@ checksum = "2fd0db749597d91ff862fd1d55ea87f7855a744a8425a64695b6fca237d1dad1"
 [[package]]
 name = "smithay"
 version = "0.3.0"
-source = "git+https://github.com/smithay/smithay#941e5b95672ef93715b8c4552bcd1ee2e94ca52b"
+source = "git+https://github.com/smithay/smithay#bb7d4e1aa62aac429170a8d945cb7517751dd1c8"
 dependencies = [
  "appendlist",
  "bitflags",
@@ -1181,8 +1181,8 @@ dependencies = [
 
 [[package]]
 name = "smithay-client-toolkit"
-version = "0.15.4"
-source = "git+https://github.com/wash2/client-toolkit.git#ebcf9b3ed6454b050621e021f4bf4136fc810965"
+version = "0.16.0"
+source = "git+https://github.com/smithay/client-toolkit.git#f03c4b7dea89648dbcba43de80eb14687e0e9da8"
 dependencies = [
  "bitflags",
  "calloop",
@@ -1190,7 +1190,7 @@ dependencies = [
  "lazy_static",
  "log",
  "memmap2",
- "nix 0.22.3",
+ "nix 0.24.1",
  "pkg-config",
  "wayland-client",
  "wayland-cursor",
@@ -1603,6 +1603,7 @@ dependencies = [
 [[package]]
 name = "xdg-shell-wrapper"
 version = "0.1.0"
+source = "git+https://github.com/pop-os/xdg-shell-wrapper#e84cdb531475db86b22ad3023812acedf859c8a5"
 dependencies = [
  "anyhow",
  "itertools",
@@ -1622,6 +1623,7 @@ dependencies = [
 [[package]]
 name = "xdg-shell-wrapper-config"
 version = "0.1.0"
+source = "git+https://github.com/pop-os/xdg-shell-wrapper#e84cdb531475db86b22ad3023812acedf859c8a5"
 dependencies = [
  "serde",
  "wayland-protocols 0.29.4",

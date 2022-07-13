@@ -11,5 +11,5 @@ anyhow = "1.0.53"
 ron = "0.7.0"
 serde = { version = "1.0.136", features = ["derive"] }
 xdg = "2.4.0"
-xdg-shell-wrapper-config = { path = "../../xdg-shell-wrapper/xdg-shell-wrapper-config"}
-#xdg-shell-wrapper-config = { git = "https://github.com/pop-os/xdg-shell-wrapper" }
+#xdg-shell-wrapper-config = { path = "../../xdg-shell-wrapper/xdg-shell-wrapper-config"}
+xdg-shell-wrapper-config = { git = "https://github.com/pop-os/xdg-shell-wrapper" }
