@@ -1603,7 +1603,7 @@ dependencies = [
 [[package]]
 name = "xdg-shell-wrapper"
 version = "0.1.0"
-source = "git+https://github.com/pop-os/xdg-shell-wrapper#e84cdb531475db86b22ad3023812acedf859c8a5"
+source = "git+https://github.com/pop-os/xdg-shell-wrapper#ccaa723683c106f30162e385ab3516ae00511873"
 dependencies = [
  "anyhow",
  "itertools",
@@ -1623,7 +1623,7 @@ dependencies = [
 [[package]]
 name = "xdg-shell-wrapper-config"
 version = "0.1.0"
-source = "git+https://github.com/pop-os/xdg-shell-wrapper#e84cdb531475db86b22ad3023812acedf859c8a5"
+source = "git+https://github.com/pop-os/xdg-shell-wrapper#ccaa723683c106f30162e385ab3516ae00511873"
 dependencies = [
  "serde",
  "wayland-protocols 0.29.4",

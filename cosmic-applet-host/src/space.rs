@@ -333,7 +333,7 @@ impl AppletHostSpace {
 
             if active_applet.should_render {
                 active_applet.should_render = false;
-                let cur_damage = if active_applet.full_clear {
+                let mut cur_damage = if active_applet.full_clear {
                     vec![
                         (Rectangle::from_loc_and_size(
                             (0, 0),
@@ -348,6 +348,10 @@ impl AppletHostSpace {
                     )
                 };
 
+                cur_damage.dedup();
+                cur_damage.retain(|rect| rect.overlaps(output_geo.to_physical(1)));
+                cur_damage.retain(|rect| rect.size.h > 0 && rect.size.w > 0);
+
                 if let Some(mut damage) = Self::damage_for_buffer(
                     cur_damage,
                     &mut active_applet.w_accumulated_damage,
@@ -358,6 +362,10 @@ impl AppletHostSpace {
                             (0, 0),
                             active_applet.dimensions.to_physical(1),
                         ));
+                    } else {
+                        damage.dedup();
+                        damage.retain(|rect| rect.overlaps(output_geo.to_physical(1)));
+                        damage.retain(|rect| rect.size.h > 0 && rect.size.w > 0);
                     }
                     let w_loc = self.space.window_location(&w).unwrap_or_else(|| (0, 0).into());
                     let _ = renderer.unbind();
@@ -394,6 +402,7 @@ impl AppletHostSpace {
                         .unwrap()
                         .swap_buffers(Some(&mut damage))
                         .expect("Failed to swap buffers.");
+                    active_applet.full_clear = false;
                 }
             }
             // Popup rendering
@@ -470,14 +479,14 @@ impl AppletHostSpace {
             .try_into()
             .unwrap_or_default();
         let dmg_counts = acc_damage.len();
-
-        let ret = if age == 0 || age > dmg_counts {
+        let ret = if age == 0 {
+            Some(Vec::new())
+        } else if age >= dmg_counts {
+            acc_damage.push(cur_damage);
             Some(Vec::new())
         } else {
-            if !cur_damage.is_empty() {
-                acc_damage.push(cur_damage);
-                age += 1;
-            }
+            acc_damage.push(cur_damage);
+            age += 1;
             let mut d = acc_damage.clone();
             d.reverse();
             let d = d[..age + 1]
@@ -485,8 +494,8 @@ impl AppletHostSpace {
                 .map(|v| v.into_iter().cloned())
                 .flatten()
                 .collect_vec();
+            // dbg!(&d);
             if d.is_empty() {
-                // pop front because it won't actually be used
                 None
             } else {
                 Some(d)
@@ -500,6 +509,7 @@ impl AppletHostSpace {
         // dbg!(age, dmg_counts, &acc_damage, &ret);
         ret
     }
+
 
     fn z_index(&self, applet: &str) -> Option<RenderZindex> {
         match self.config.layer(applet) {
@@ -538,6 +548,11 @@ impl AppletHostSpace {
         {
             let mut active_applet = self.active_applets.swap_remove(i);
             return Ok(());
+        }
+
+        if let (Some(ls), Some(wl_s), Some(egl_s)) = (self.layer_surface.take(), self.layer_shell_wl_surface.take(), self.egl_surface.take()) {
+            ls.destroy();
+            wl_s.destroy();
         }
 
         let w = self
@@ -671,6 +686,81 @@ impl WrapperSpace for AppletHostSpace {
             std::process::exit(0);
         }
         let windows = self.space.windows().cloned().collect_vec();
+        match self.next_space_event.take() {
+            Some(SpaceEvent::Quit) => {
+                // TODO cleanup
+            }
+            Some(SpaceEvent::Configure {
+                     first,
+                     width,
+                     height,
+                     serial: _serial,
+                 }) => {
+                self.layer_shell_wl_surface.as_ref().unwrap().commit();
+                if first {
+                    let log = self.log.clone().unwrap();
+                    let client_egl_surface = ClientEglSurface {
+                        wl_egl_surface: WlEglSurface::new(
+                            self.layer_shell_wl_surface.as_ref().unwrap(),
+                            width,
+                            height,
+                        ),
+                        display: self.c_display.as_ref().unwrap().clone(),
+                    };
+                    let egl_display = EGLDisplay::new(&client_egl_surface, log.clone())
+                        .expect("Failed to initialize EGL display");
+                    let egl_context = EGLContext::new_with_config(
+                        &egl_display,
+                        GlAttributes {
+                            version: (3, 0),
+                            profile: None,
+                            debug: cfg!(debug_assertions),
+                            vsync: false,
+                        },
+                        Default::default(),
+                        log.clone(),
+                    )
+                        .expect("Failed to initialize EGL context");
+                    let renderer = unsafe {
+                        Gles2Renderer::new(egl_context, log.clone())
+                            .expect("Failed to initialize EGL Surface")
+                    };
+                    trace!(log, "{:?}", unsafe {
+                        SwapInterval(egl_display.get_display_handle().handle, 0)
+                    });
+                    let egl_surface = Rc::new(
+                        EGLSurface::new(
+                            &egl_display,
+                            renderer
+                                .egl_context()
+                                .pixel_format()
+                                .expect("Failed to get pixel format from EGL context "),
+                            renderer.egl_context().config_id(),
+                            client_egl_surface,
+                            log.clone(),
+                        )
+                            .expect("Failed to initialize EGL Surface"),
+                    );
+                    self.renderer.replace(renderer);
+                    self.egl_surface.replace(egl_surface);
+                    self.egl_display.replace(egl_display);
+                    self.layer_shell_wl_surface.as_ref().unwrap().commit();
+                }
+            }
+            Some(SpaceEvent::WaitConfigure {
+                     first,
+                     width,
+                     height,
+                 }) => {
+                self.next_space_event
+                    .replace(Some(SpaceEvent::WaitConfigure {
+                        first,
+                        width,
+                        height,
+                    }));
+            }
+            None => {}
+        }
 
         self.active_applets.retain_mut(|a| {
             a.popups
@@ -965,39 +1055,76 @@ impl WrapperSpace for AppletHostSpace {
             bail!("output already added!")
         }
 
+        let layer_surface =
+            layer_shell.get_layer_surface(&c_surface, output, Layer::Overlay, "".to_owned());
 
-        let client_egl_surface = ClientEglSurface {
-            wl_egl_surface: WlEglSurface::new(
-                &c_surface,
-                1,
-                1,
-            ),
-            display: c_display.clone(),
-        };
-        let egl_display = EGLDisplay::new(&client_egl_surface, log.clone())
-            .expect("Failed to initialize EGL display");
+        layer_surface.set_anchor(cosmic_applet_host_config::Anchor::Bottom.into());
+        layer_surface.set_keyboard_interactivity(
+            xdg_shell_wrapper::config::KeyboardInteractivity::None.into(),
+        );
+        layer_surface.set_size(dimensions.w as u32, dimensions.h as u32);
 
-        let egl_context = EGLContext::new_with_config(
-            &egl_display,
-            GlAttributes {
-                version: (3, 0),
-                profile: None,
-                debug: cfg!(debug_assertions),
-                vsync: false,
-            },
-            Default::default(),
-            log.clone(),
-        )
-            .expect("Failed to initialize EGL context");
+        // Commit so that the server will send a configure event
+        c_surface.commit();
+        //let egl_surface_clone = egl_surface.clone();
 
-        let renderer = unsafe {
-            Gles2Renderer::new(egl_context, log.clone())
-                .expect("Failed to initialize EGL Surface")
-        };
+        let next_render_event = Rc::new(Cell::new(Some(SpaceEvent::WaitConfigure {
+            first: true,
+            width: dimensions.w,
+            height: dimensions.h,
+        })));
+        let next_render_event_handle = next_render_event.clone();
+        let logger = log.clone();
+        let start = self.start.clone();
+        layer_surface.quick_assign(move |layer_surface, event, _| {
+            match (event, next_render_event_handle.get()) {
+                (zwlr_layer_surface_v1::Event::Closed, _) => {
+                    info!(logger, "Received close event. closing.");
+                    next_render_event_handle.set(Some(SpaceEvent::Quit));
+                }
+                (
+                    zwlr_layer_surface_v1::Event::Configure {
+                        serial,
+                        width,
+                        height,
+                    },
+                    next,
+                ) if next != Some(SpaceEvent::Quit) => {
+                    trace!(
+                        logger,
+                        "received configure event {:?} {:?} {:?}",
+                        serial,
+                        width,
+                        height
+                    );
+                    layer_surface.ack_configure(serial);
+                    let first = match next {
+                        Some(SpaceEvent::Configure { first, .. }) => first,
+                        Some(SpaceEvent::WaitConfigure { first, .. }) => first,
+                        _ => false,
+                    };
+                    next_render_event_handle.set(Some(SpaceEvent::Configure {
+                        first,
+                        width: if width == 0 {
+                            dimensions.w
+                        } else {
+                            width.try_into().unwrap()
+                        },
+                        height: if height == 0 {
+                            dimensions.h
+                        } else {
+                            height.try_into().unwrap()
+                        },
+                        serial: serial.try_into().unwrap(),
+                    }));
+                }
+                (_, _) => {}
+            }
+        });
 
-        self.renderer.replace(renderer);
-        self.egl_display.replace(egl_display);
+        self.next_space_event = next_render_event;
         self.layer_shell_wl_surface.replace(c_surface);
+        self.layer_surface.replace(layer_surface);
         self.layer_shell.replace(layer_shell);
         self.focused_surface = focused_surface.clone();
         self.output = output.cloned().zip(output_info.cloned());
