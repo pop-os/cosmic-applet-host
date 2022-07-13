@@ -38,8 +38,7 @@ fn main() -> Result<()> {
         }
         Some(profile) => cosmic_applet_host_config::AppletHostConfig::load(profile),
         None => {
-            println!("{}", usage);
-            std::process::exit(1);
+            Default::default()
         }
     };
 
