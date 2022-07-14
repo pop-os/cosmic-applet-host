@@ -100,7 +100,7 @@ pub struct ActiveApplet {
     pub(crate) popups: Vec<Popup>,
     // tracking for drawing
     pub(crate) pending_dimensions: Option<Size<i32, Logical>>,
-    pub(crate) full_clear: bool,
+    pub(crate) full_clear: u8,
     pub(crate) should_render: bool,
     pub(crate) next_render_event: Rc<Cell<Option<SpaceEvent>>>,
     pub(crate) dimensions: Size<i32, Logical>,
@@ -110,7 +110,6 @@ pub struct ActiveApplet {
 impl Drop for ActiveApplet {
     fn drop(&mut self) {
         self.layer_surface.destroy();
-        self.layer_shell_wl_surface.destroy();
     }
 }
 
@@ -123,6 +122,7 @@ impl ActiveApplet {
         renderer: &Gles2Renderer,
         egl_display: &EGLDisplay,
     ) -> bool {
+        self.should_render = false;
         match self.next_render_event.take() {
             Some(SpaceEvent::Quit) => {
                 return false;
@@ -133,8 +133,6 @@ impl ActiveApplet {
                 height,
                 serial: _serial,
             }) => {
-                self.dimensions = (width, height).into();
-                self.full_clear = true;
                 if first {
                     let client_egl_surface = ClientEglSurface {
                         wl_egl_surface: WlEglSurface::new(
@@ -160,12 +158,15 @@ impl ActiveApplet {
                     );
 
                     self.egl_surface.replace(egl_surface);
-                } else {
+                } else if self.egl_surface.as_ref().unwrap().get_size() != Some((width as i32, height as i32).into()) {
                     self.egl_surface
                         .as_ref()
                         .unwrap()
                         .resize(width as i32, height as i32, 0, 0);
                 }
+
+                self.dimensions = (width, height).into();
+                self.full_clear = 4;
                 self.layer_shell_wl_surface.commit();
             }
             Some(SpaceEvent::WaitConfigure {
@@ -191,10 +192,11 @@ impl ActiveApplet {
                             width: d.w,
                             height: d.h,
                         }));
+                    self.full_clear = 4;
                 } else if self.egl_surface.as_ref().unwrap().get_size()
                     != Some(self.dimensions.to_physical(1))
                 {
-                    self.full_clear = true;
+                    self.full_clear = 4;
                 } else {
                     self.should_render = true;
                 }
@@ -332,14 +334,10 @@ impl AppletHostSpace {
                 Rectangle::from_loc_and_size(o.current_location(), output_size.to_logical(1));
 
             if active_applet.should_render {
-                active_applet.should_render = false;
-                let mut cur_damage = if active_applet.full_clear {
-                    vec![
-                        (Rectangle::from_loc_and_size(
-                            (0, 0),
-                            active_applet.dimensions.to_physical(1),
-                        )),
-                    ]
+                // TODO remove the permanent full clear after fixing the issue where resized windows aren't fully rendered
+                active_applet.full_clear = 4;
+                let mut cur_damage = if active_applet.full_clear > 0 {
+                    vec![]
                 } else {
                     w.accumulated_damage(
                         w.geometry().loc.to_f64().to_physical(1.0),
@@ -348,78 +346,95 @@ impl AppletHostSpace {
                     )
                 };
 
-                cur_damage.dedup();
-                cur_damage.retain(|rect| rect.overlaps(output_geo.to_physical(1)));
-                cur_damage.retain(|rect| rect.size.h > 0 && rect.size.w > 0);
-
-                if let Some(mut damage) = Self::damage_for_buffer(
+                let mut damage = match Self::damage_for_buffer(
                     cur_damage,
                     &mut active_applet.w_accumulated_damage,
-                    active_applet.egl_surface.as_ref().unwrap(),
+                    &active_applet.egl_surface.as_ref().unwrap().clone(),
+                    active_applet.full_clear,
                 ) {
-                    if damage.is_empty() {
-                        damage.push(Rectangle::from_loc_and_size(
-                            (0, 0),
-                            active_applet.dimensions.to_physical(1),
-                        ));
-                    } else {
-                        damage.dedup();
-                        damage.retain(|rect| rect.overlaps(output_geo.to_physical(1)));
-                        damage.retain(|rect| rect.size.h > 0 && rect.size.w > 0);
-                    }
-                    let w_loc = self.space.window_location(&w).unwrap_or_else(|| (0, 0).into());
-                    let _ = renderer.unbind();
-                    renderer
-                        .bind(active_applet.egl_surface.as_ref().unwrap().clone())
-                        .expect("Failed to bind surface to GL");
-                    let _ = renderer.render(
-                        active_applet.dimensions.to_physical(1),
-                        smithay::utils::Transform::Flipped180,
-                        |renderer: &mut Gles2Renderer, frame| {
-                            frame
-                                .clear(clear_color, damage.iter().cloned().collect_vec().as_slice())
-                                .expect("Failed to clear frame.");
-                            for w in self.space.windows() {
-                                if damage.len() == 0 {
-                                    continue;
-                                }
+                    None => vec![],
+                    Some(d) if d.is_empty() => continue,
+                    Some(d) => d,
+                };
 
-                                let _ = draw_window(
-                                    renderer,
-                                    frame,
-                                    w,
-                                    1.0,
-                                    w_loc.to_physical(1).to_f64(),
-                                    &damage,
-                                    &log_clone,
-                                );
-                            }
-                        },
-                    );
-                    active_applet
-                        .egl_surface
-                        .as_ref()
-                        .unwrap()
-                        .swap_buffers(Some(&mut damage))
-                        .expect("Failed to swap buffers.");
-                    active_applet.full_clear = false;
-                }
+                damage.dedup();
+                damage.retain(|rect| rect.overlaps(output_geo.to_physical(1)));
+                damage.retain(|rect| rect.size.h > 0 && rect.size.w > 0);
+
+                let w_loc = self.space.window_location(&w).unwrap_or_else(|| (0, 0).into());
+
+                let a_damage = if damage.is_empty() {
+                    vec![Rectangle::from_loc_and_size(
+                        w_loc.to_physical(1),
+                        active_applet.dimensions.to_physical(1),
+                    )]
+                } else {
+                    damage.clone()
+                };
+                let _ = renderer.unbind();
+                renderer
+                    .bind(active_applet.egl_surface.as_ref().unwrap().clone())
+                    .expect("Failed to bind surface to GL");
+                let _ = renderer.render(
+                    active_applet.dimensions.to_physical(1),
+                    smithay::utils::Transform::Flipped180,
+                    |renderer: &mut Gles2Renderer, frame| {
+                        frame
+                            .clear(clear_color, a_damage.iter().cloned().collect_vec().as_slice())
+                            .expect("Failed to clear frame.");
+
+                        let _ = draw_window(
+                            renderer,
+                            frame,
+                            w,
+                            1.0,
+                            w_loc.to_physical(1).to_f64(),
+                            &a_damage,
+                            &log_clone,
+                        );
+                    },
+                );
+                active_applet
+                    .egl_surface
+                    .as_ref()
+                    .unwrap()
+                    .swap_buffers(if damage.is_empty() {None} else {Some(&mut damage)})
+                    .expect("Failed to swap buffers.");
+                active_applet.full_clear = active_applet.full_clear.checked_sub(1).unwrap_or_default();
             }
+        }
+
+        for active_applet in &mut self.active_applets {
+            let w = if let Some(w) = self
+                .space
+                .window_for_surface(&active_applet.s_wl_surface, WindowSurfaceType::TOPLEVEL)
+            {
+                w
+            } else {
+                continue;
+            };
+
+            let o = if let Some(o) = self.space.outputs_for_window(w).pop() {
+                o
+            } else {
+                continue;
+            };
             // Popup rendering
+            let clear_color = [0.0, 0.0, 0.0, 0.0];
             for p in active_applet.popups.iter_mut().filter(|p| {
                 p.dirty
                     && match p.popup_state.get() {
-                        None => true,
-                        _ => false,
-                    }
+                    None => true,
+                    _ => false,
+                }
             }) {
                 let _ = renderer.unbind();
                 renderer
                     .bind(p.egl_surface.as_ref().unwrap().clone())
                     .expect("Failed to bind surface to GL");
                 let p_bbox = bbox_from_surface_tree(p.s_surface.wl_surface(), (0, 0));
-                let cur_damage = if active_applet.full_clear {
-                    vec![p_bbox.to_physical(1)]
+                let cur_damage = if p.full_clear > 0 {
+                    vec![]
                 } else {
                     damage_from_surface_tree(
                         p.s_surface.wl_surface(),
@@ -429,39 +444,49 @@ impl AppletHostSpace {
                     )
                 };
 
-                if let Some(mut damage) =
-                    Self::damage_for_buffer(cur_damage, &mut p.accumulated_damage, p.egl_surface.as_ref().unwrap())
-                {
-                    if damage.is_empty() {
-                        damage.push(p_bbox.to_physical(1));
-                    }
+                let mut damage = match Self::damage_for_buffer(
+                    cur_damage,
+                    &mut p.accumulated_damage,
+                    &p.egl_surface.as_ref().unwrap().clone(),
+                    p.full_clear,
+                ) {
+                    None => vec![],
+                    Some(d) if d.is_empty() => continue,
+                    Some(d) => d,
+                };
 
-                    let _ = renderer.render(
-                        p_bbox.size.to_physical(1),
-                        smithay::utils::Transform::Flipped180,
-                        |renderer: &mut Gles2Renderer, frame| {
-                            frame
-                                .clear(clear_color, damage.iter().cloned().collect_vec().as_slice())
-                                .expect("Failed to clear frame.");
+                let _ = renderer.render(
+                    p_bbox.size.to_physical(1),
+                    smithay::utils::Transform::Flipped180,
+                    |renderer: &mut Gles2Renderer, frame| {
+                        let p_damage = if damage.is_empty() {
+                            vec![p_bbox.to_physical(1)]
+                        } else {
+                            damage.clone()
+                        };
 
-                            let _ = draw_surface_tree(
-                                renderer,
-                                frame,
-                                p.s_surface.wl_surface(),
-                                1.0,
-                                p_bbox.loc.to_f64().to_physical(1.0),
-                                &damage,
-                                &log_clone,
-                            );
-                        },
-                    );
-                    p.egl_surface.as_ref().unwrap()
-                        .swap_buffers(Some(&mut damage))
-                        .expect("Failed to swap buffers.");
-                    p.dirty = false;
-                }
+                        frame
+                            .clear(clear_color, p_damage.iter().cloned().collect_vec().as_slice())
+                            .expect("Failed to clear frame.");
+
+                        let _ = draw_surface_tree(
+                            renderer,
+                            frame,
+                            p.s_surface.wl_surface(),
+                            1.0,
+                            p_bbox.loc.to_f64().to_physical(1.0),
+                            &p_damage,
+                            &log_clone,
+                        );
+                    },
+                );
+                p.egl_surface
+                    .as_ref().unwrap()
+                    .swap_buffers(if damage.is_empty() { None } else { Some(&mut damage) })
+                    .expect("Failed to swap buffers.");
+                p.dirty = false;
+                p.full_clear = p.full_clear.checked_sub(1).unwrap_or_default();
             }
-            active_applet.full_clear = false;
         }
 
         self.space.send_frames(time);
@@ -472,18 +497,30 @@ impl AppletHostSpace {
         cur_damage: Vec<Rectangle<i32, Physical>>,
         acc_damage: &mut Vec<Vec<Rectangle<i32, Physical>>>,
         egl_surface: &Rc<EGLSurface>,
+        full_clear: u8,
     ) -> Option<Vec<Rectangle<i32, Physical>>> {
         let mut age: usize = egl_surface
             .buffer_age()
             .unwrap_or_default()
             .try_into()
             .unwrap_or_default();
+
+        // reset accumulated damage when applying full clear for the first time
+        if full_clear == 4 {
+            acc_damage.drain(..);
+        }
+
         let dmg_counts = acc_damage.len();
+        // buffer contents undefined, treat as a full clear
         let ret = if age == 0 {
-            Some(Vec::new())
-        } else if age >= dmg_counts {
+            acc_damage.drain(..);
+            None
+            // buffer older than we keep track of, full clear, but don't reset accumulated damage, instead add to acc damage
+        } else if age >= dmg_counts || full_clear > 0 {
             acc_damage.push(cur_damage);
-            Some(Vec::new())
+            age += 1;
+            None
+            // use get the accumulated damage for the last [age] renders, and add to acc damage
         } else {
             acc_damage.push(cur_damage);
             age += 1;
@@ -494,14 +531,10 @@ impl AppletHostSpace {
                 .map(|v| v.into_iter().cloned())
                 .flatten()
                 .collect_vec();
-            // dbg!(&d);
-            if d.is_empty() {
-                None
-            } else {
-                Some(d)
-            }
+            Some(d)
         };
 
+        // acc damage should only ever be length 4
         if acc_damage.len() > 4 {
             acc_damage.drain(..acc_damage.len() - 4);
         }
@@ -552,7 +585,6 @@ impl AppletHostSpace {
 
         if let (Some(ls), Some(wl_s), Some(egl_s)) = (self.layer_surface.take(), self.layer_shell_wl_surface.take(), self.egl_surface.take()) {
             ls.destroy();
-            wl_s.destroy();
         }
 
         let w = self
@@ -657,7 +689,7 @@ impl AppletHostSpace {
                 s_wl_surface: s_wl_surface.clone(),
                 popups: Default::default(),
                 pending_dimensions: None,
-                full_clear: true,
+                full_clear: 4,
                 should_render: false,
                 next_render_event,
                 dimensions,
@@ -949,6 +981,7 @@ impl WrapperSpace for AppletHostSpace {
             popup_state: cur_popup_state,
             position: (0, 0).into(),
             accumulated_damage: Default::default(),
+            full_clear: 4
         });
     }
 
@@ -1245,7 +1278,7 @@ impl WrapperSpace for AppletHostSpace {
                     != size
                 {
                     active_applet.pending_dimensions.replace(size);
-                    active_applet.full_clear = true;
+                    active_applet.full_clear = 4;
                 }
             }
         }
@@ -1290,6 +1323,5 @@ impl WrapperSpace for AppletHostSpace {
 impl Drop for AppletHostSpace {
     fn drop(&mut self) {
         self.layer_surface.as_mut().map(|s| s.destroy());
-        self.layer_shell_wl_surface.as_mut().map(|s| s.destroy());
     }
 }
