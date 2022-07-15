@@ -10,11 +10,11 @@ Build-Depends:
   libxkbcommon-dev,
   pkg-config,
 Standards-Version: 4.3.0
-Homepage: https://github.com/pop-os/simple-wrapper
+Homepage: https://github.com/pop-os/cosmic-applet-host
 
-Package: simple-wrapper
+Package: cosmic-applet-host
 Architecture: amd64 arm64
 Depends:
   ${misc:Depends},
   ${shlibs:Depends}
-Description: Simple XDG Shell Wrapper
+Description: Cosmic Applet Host
