@@ -22,6 +22,6 @@ itertools = "0.10.3"
 wayland-egl = "0.29.4"
 cosmic-applet-host-config = { path = "../cosmic-applet-host-config" }
 xdg-shell-wrapper = { git = "https://github.com/pop-os/xdg-shell-wrapper" }
-#xdg-shell-wrapper = { path = "../../xdg-shell-wrapper"}
+# xdg-shell-wrapper = { path = "../../xdg-shell-wrapper"}
 zbus = "2.3.2"
 event-listener = "2.5.2"

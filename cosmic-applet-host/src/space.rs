@@ -308,7 +308,7 @@ impl AppletHostSpace {
 
         let log_clone = self.log.clone().unwrap();
 
-        for mut active_applet in &mut self.active_applets {
+        for active_applet in &mut self.active_applets {
             let w = if let Some(w) = self
                 .space
                 .window_for_surface(&active_applet.s_wl_surface, WindowSurfaceType::TOPLEVEL)
@@ -336,7 +336,7 @@ impl AppletHostSpace {
             if active_applet.should_render {
                 // TODO remove the permanent full clear after fixing the issue where resized windows aren't fully rendered
                 active_applet.full_clear = 4;
-                let mut cur_damage = if active_applet.full_clear > 0 {
+                let cur_damage = if active_applet.full_clear > 0 {
                     vec![]
                 } else {
                     w.accumulated_damage(
@@ -571,7 +571,7 @@ impl AppletHostSpace {
     pub fn toggle_applet(
         &mut self,
         applet_name: &str,
-        c_surface: Attached<c_wl_surface::WlSurface>,
+        env_handle: &Environment<Env>,
     ) -> anyhow::Result<()> {
         // cleanup
         if let Some(i) = self
@@ -579,13 +579,15 @@ impl AppletHostSpace {
             .iter()
             .position(|a| a.name == applet_name.to_string())
         {
-            let mut active_applet = self.active_applets.swap_remove(i);
+            let mut _old_active_applet = self.active_applets.swap_remove(i);
             return Ok(());
         }
 
         if let (Some(ls), Some(wl_s), Some(egl_s)) = (self.layer_surface.take(), self.layer_shell_wl_surface.take(), self.egl_surface.take()) {
             ls.destroy();
         }
+
+        let c_surface = env_handle.create_surface();
 
         let w = self
             .clients
@@ -717,7 +719,6 @@ impl WrapperSpace for AppletHostSpace {
             );
             std::process::exit(0);
         }
-        let windows = self.space.windows().cloned().collect_vec();
         match self.next_space_event.take() {
             Some(SpaceEvent::Quit) => {
                 // TODO cleanup
@@ -817,7 +818,7 @@ impl WrapperSpace for AppletHostSpace {
             .collect_vec()
     }
 
-    fn handle_button(&mut self, c_focused_surface: &c_wl_surface::WlSurface) {
+    fn handle_button(&mut self, c_focused_surface: &c_wl_surface::WlSurface) -> bool {
         let matches_any_client = self
             .active_applets
             .iter()
@@ -825,6 +826,7 @@ impl WrapperSpace for AppletHostSpace {
         if self.focused_surface.borrow().is_none() && matches_any_client {
             self.close_popups()
         }
+        false
     }
 
     fn add_window(&mut self, w: Window) {

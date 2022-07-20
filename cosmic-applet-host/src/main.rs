@@ -70,9 +70,13 @@ fn main() -> Result<()> {
             )| {
                 match e {
                     Event::Msg(AppletHostEvent::Name(name)) => {
-                        let env_handle = state.0.env_handle();
-                        let c_surface = env_handle.create_surface();
-                        let _ = state.0.space.toggle_applet(&name, c_surface);
+                        let GlobalState {
+                            space,
+                            desktop_client_state,
+                            ..
+                        } = &mut state.0;
+                        let env_handle = &desktop_client_state.env_handle;
+                        let _ = space.toggle_applet(&name, &env_handle);
                     }
                     Event::Closed => {
                         // TODO gracefully shut down
