@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 smithay = { git = "https://github.com/smithay/smithay", default-features = false, features = ["use_system_lib", "desktop", "backend_egl", "backend_drm", "renderer_gl", "slog-stdlog"] }
 # smithay = { path = "../../smithay", default-features = false, features = ["use_system_lib", "desktop", "backend_egl", "backend_drm", "renderer_gl", "slog-stdlog"] }
-sctk = { package = "smithay-client-toolkit", git = "https://github.com/smithay/client-toolkit.git", default-features = false, features = ["calloop"] }
+sctk = { package = "smithay-client-toolkit", version = "0.16.0", default-features = false, features = ["calloop"] }
 # sctk = { package = "smithay-client-toolkit", path = "../../client-toolkit", default-features = false, features = ["calloop"] }
 anyhow = "1.0.53"
 shlex = "1.1.0"

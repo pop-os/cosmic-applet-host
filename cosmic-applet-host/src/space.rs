@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0-only
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell},
     default::Default,
     ffi::OsString,
-    fs, mem,
+    fs,
     os::unix::{net::UnixStream, prelude::AsRawFd},
     process::Child,
     rc::Rc,
     time::Instant,
 };
-use std::thread::spawn;
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{bail};
 use freedesktop_desktop_entry::{self, DesktopEntry, Iter};
-use itertools::{Itertools, izip};
-use libc::{c_int, qsort};
+use itertools::{Itertools};
 use sctk::{
     environment::Environment,
     output::OutputInfo,
@@ -30,8 +28,8 @@ use sctk::{
             xdg_shell::client::{
                 xdg_popup,
                 xdg_positioner::{Anchor, Gravity, XdgPositioner},
-                xdg_surface::{self, XdgSurface},
-                xdg_wm_base::{self, XdgWmBase},
+                xdg_surface,
+                xdg_wm_base::XdgWmBase,
             },
         },
     },
@@ -41,51 +39,42 @@ use slog::{info, Logger, trace};
 use smithay::{
     backend::{
         egl::{
-            self,
             context::{EGLContext, GlAttributes},
             display::EGLDisplay,
             ffi::{
-                self,
-                egl::{GetConfigAttrib, SwapInterval},
+                egl::{SwapInterval},
             },
             surface::EGLSurface,
         },
         renderer::{
-            Bind, Frame, gles2::Gles2Renderer, ImportDma, ImportEgl, Renderer,
+            Bind, Frame, gles2::Gles2Renderer, Renderer,
             Unbind, utils::draw_surface_tree,
         },
     },
     desktop::{
-        draw_popups, draw_window,
+        draw_window,
         Kind,
         PopupKind,
-        PopupManager, space::{RenderError, SurfaceTree}, Space, utils::{bbox_from_surface_tree, damage_from_surface_tree, send_frames_surface_tree}, Window, WindowSurfaceType,
+        PopupManager, space::{RenderError, }, Space, utils::{bbox_from_surface_tree, damage_from_surface_tree, }, Window, WindowSurfaceType,
     },
-    nix::{fcntl, libc},
     reexports::{
-        wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
-            self, Client, Display as s_Display, DisplayHandle,
+            self, Client, DisplayHandle,
             protocol::wl_surface::WlSurface as s_WlSurface, Resource,
         },
     },
-    utils::{Logical, Physical, Point, Rectangle, Size},
+    utils::{Logical, Physical, Rectangle, Size},
     wayland::{
-        SERIAL_COUNTER,
         shell::xdg::{PopupSurface, PositionerState},
     },
 };
-use smithay::backend::renderer::buffer_dimensions;
 use smithay::desktop::space::RenderZindex;
-use smithay::reexports::wayland_server::backend::ClientId;
 use wayland_egl::WlEglSurface;
 use xdg_shell_wrapper::{
-    client_state::{Env, Focus},
-    config::WrapperConfig,
+    client_state::{Env, ClientFocus},
     space::{ClientEglSurface, Popup, PopupState, SpaceEvent, Visibility, WrapperSpace},
-    util::{exec_child, get_client_sock},
+    util::{exec_child, get_client_sock}, server_state::{ServerFocus, ServerPtrFocus, ServerPointerFocus}, output::c_output_as_s_output,
 };
-use zbus::export::futures_util::{StreamExt, TryFutureExt};
 
 use cosmic_applet_host_config::{AppletConfig, AppletHostConfig};
 
@@ -214,12 +203,14 @@ pub struct AppletHostSpace {
     /// logger for the panel space
     pub log: Option<Logger>,
     pub(crate) space: Space,
-    pub(crate) popup_manager: PopupManager,
     pub(crate) clients: Vec<(Client, String)>,
     pub(crate) children: Vec<Child>,
     pub(crate) last_dirty: Option<Instant>,
     /// focused surface so it can be changed when a window is removed
-    focused_surface: Rc<RefCell<Option<s_WlSurface>>>,
+    pub(crate) c_focused_surface: ClientFocus,
+    pub(crate) c_hovered_surface: ClientFocus,
+    pub(crate) s_focused_surface: ServerFocus,
+    pub(crate) s_hovered_surface: ServerPtrFocus,
     /// visibility state of the panel / panel
     pub(crate) pool: Option<AutoMemPool>,
     pub(crate) layer_shell: Option<Attached<zwlr_layer_shell_v1::ZwlrLayerShellV1>>,
@@ -233,7 +224,6 @@ pub struct AppletHostSpace {
     pub(crate) next_space_event: Rc<Cell<Option<SpaceEvent>>>,
     active_applets: Vec<ActiveApplet>,
     start: Instant,
-    first_draw: bool,
 }
 
 impl AppletHostSpace {
@@ -242,12 +232,10 @@ impl AppletHostSpace {
         Self {
             config,
             space: Space::new(log.clone()),
-            popup_manager: PopupManager::new(log.clone()),
             log: Some(log),
             clients: Default::default(),
             children: Default::default(),
             last_dirty: Default::default(),
-            focused_surface: Default::default(),
             pool: Default::default(),
             layer_shell: Default::default(),
             output: Default::default(),
@@ -260,7 +248,10 @@ impl AppletHostSpace {
             start: Instant::now(),
             next_space_event: Rc::new(Cell::new(None)),
             layer_surface: None,
-            first_draw: true,
+            c_focused_surface: Default::default(),
+            c_hovered_surface: Default::default(),
+            s_focused_surface: Default::default(),
+            s_hovered_surface: Default::default(),
         }
     }
 
@@ -270,7 +261,6 @@ impl AppletHostSpace {
             PopupManager::popups_for_surface(w.toplevel().wl_surface())
             {
                 p.send_popup_done();
-                self.popup_manager.commit(p.wl_surface());
             }
         }
     }
@@ -518,7 +508,6 @@ impl AppletHostSpace {
             // buffer older than we keep track of, full clear, but don't reset accumulated damage, instead add to acc damage
         } else if age >= dmg_counts || full_clear > 0 {
             acc_damage.push(cur_damage);
-            age += 1;
             None
             // use get the accumulated damage for the last [age] renders, and add to acc damage
         } else {
@@ -568,6 +557,7 @@ impl AppletHostSpace {
             .and_then(|name| self.config.applet(&name))
     }
 
+    // TODO should this include the seat name that it should be toggled for?
     pub fn toggle_applet(
         &mut self,
         applet_name: &str,
@@ -583,7 +573,7 @@ impl AppletHostSpace {
             return Ok(());
         }
 
-        if let (Some(ls), Some(wl_s), Some(egl_s)) = (self.layer_surface.take(), self.layer_shell_wl_surface.take(), self.egl_surface.take()) {
+        if let (Some(ls), Some(_), Some(_)) = (self.layer_surface.take(), self.layer_shell_wl_surface.take(), self.egl_surface.take()) {
             ls.destroy();
         }
 
@@ -604,7 +594,8 @@ impl AppletHostSpace {
                 })
             }).cloned();
         if let Some(w) = w {
-            self.focused_surface.replace(Some(w.toplevel().wl_surface().clone()));
+            // TODO is this necessary?
+            // self.s_focused_surface.replace(w.toplevel().wl_surface().clone());
             self.space.raise_window(&w, true);
             let s_wl_surface = w.toplevel().wl_surface();
             let dimensions = w.bbox().size;
@@ -706,7 +697,10 @@ impl AppletHostSpace {
 impl WrapperSpace for AppletHostSpace {
     type Config = AppletHostConfig;
 
-    fn handle_events(&mut self, dh: &DisplayHandle, time: u32, _: &Focus) -> Instant {
+    fn handle_events(&mut self, dh: &DisplayHandle, popup_manager: &mut PopupManager, time: u32) -> Instant {
+        self.space.refresh(dh);
+        popup_manager.cleanup();
+        
         if self
             .children
             .iter_mut()
@@ -797,7 +791,7 @@ impl WrapperSpace for AppletHostSpace {
 
         self.active_applets.retain_mut(|a| {
             a.popups
-                .retain_mut(|p: &mut Popup| p.handle_events(&mut self.popup_manager, self.renderer.as_ref().unwrap().egl_context(), self.egl_display.as_ref().unwrap(), self.c_display.as_ref().unwrap()));
+                .retain_mut(|p: &mut Popup| p.handle_events(popup_manager, self.renderer.as_ref().unwrap().egl_context(), self.egl_display.as_ref().unwrap(), self.c_display.as_ref().unwrap()));
             a.handle_events(
                 self.log.as_ref().unwrap().clone(),
                 self.c_display.as_ref().unwrap(),
@@ -810,30 +804,53 @@ impl WrapperSpace for AppletHostSpace {
         self.last_dirty.unwrap_or_else(|| self.start)
     }
 
-    fn popups(&self) -> Vec<&Popup> {
-        self.active_applets
-            .iter()
-            .map(|a| &a.popups)
-            .flatten()
-            .collect_vec()
-    }
+    fn handle_press(&mut self, seat_name: &str) -> Option<s_WlSurface> {
+        if let Some(prev_foc) = {
+            let c_hovered_surface = self.c_hovered_surface.borrow();
 
-    fn handle_button(&mut self, c_focused_surface: &c_wl_surface::WlSurface) -> bool {
-        let matches_any_client = self
-            .active_applets
-            .iter()
-            .any(|a| *a.layer_shell_wl_surface == *c_focused_surface);
-        if self.focused_surface.borrow().is_none() && matches_any_client {
-            self.close_popups()
+            match c_hovered_surface
+                .iter()
+                .enumerate()
+                .find(|(_, f)| f.1 == seat_name)
+            {
+                Some((i, f)) => Some((i, f.0.clone())),
+                None => {
+                    None
+                },
+            }
+        } {
+            // close popups when panel is pressed
+            if self.active_applets.iter().any(|a| *a.layer_shell_wl_surface == prev_foc.1) && !self.active_applets.iter().map(|a| a.popups.iter()).flatten().next().is_none()
+            {
+                self.close_popups();
+            }
+
+            self.s_hovered_surface.iter().find_map(|h| {
+                if h.seat_name.as_str() == seat_name {
+                    Some(h.surface.clone())
+                } else {
+                    None
+                }
+            })
+        } else {
+            // no hover found
+            // if has keyboard focus remove it and close popups
+            self.keyboard_leave(seat_name, None);
+            None
         }
-        false
+        // let matches_any_client = self
+        //     .active_applets
+        //     .iter()
+        //     .any(|a| *a.layer_shell_wl_surface == *c_focused_surface);
+        // if self.focused_surface.borrow().is_none() && matches_any_client {
+        //     self.close_popups()
+        // }
+        // false
     }
 
     fn add_window(&mut self, w: Window) {
         // TODO find active applet with matching client and full clear
         // self.full_clear = true;
-        let wl_surface = w.toplevel().wl_surface().clone();
-
         let name = if let Some(applet_config) = self.applet_config_for_window(&w) {
             applet_config.name.clone()
         } else {
@@ -862,7 +879,7 @@ impl WrapperSpace for AppletHostSpace {
             offset,
             reactive,
             parent_size,
-            parent_configure,
+            ..
         }: PositionerState,
     ) {
         self.close_popups();
@@ -888,12 +905,7 @@ impl WrapperSpace for AppletHostSpace {
         let c_wl_surface = env.create_surface().detach();
         let c_xdg_surface = xdg_wm_base.get_xdg_surface(&c_wl_surface);
 
-        let wl_surface = s_surface.wl_surface().clone();
         let s_popup_surface = s_surface.clone();
-        self.popup_manager
-            .track_popup(PopupKind::Xdg(s_surface.clone()))
-            .unwrap();
-        self.popup_manager.commit(&wl_surface);
 
         // dbg!(s.bbox().loc);
         positioner.set_size(rect_size.w, rect_size.h);
@@ -968,10 +980,6 @@ impl WrapperSpace for AppletHostSpace {
                 _ => {}
             };
         });
-        let client_egl_surface = ClientEglSurface {
-            wl_egl_surface: WlEglSurface::new(&c_wl_surface, rect_size.w, rect_size.h),
-            display: self.c_display.as_ref().unwrap().clone(),
-        };
 
         active_applet.popups.push(Popup {
             c_popup,
@@ -987,20 +995,6 @@ impl WrapperSpace for AppletHostSpace {
         });
     }
 
-    // TODO fix this
-    ///  update active window based on pointer location
-    fn update_pointer(&mut self, (x, y): (i32, i32)) {
-        // set new focused
-        if let Some((_, s, _)) = self
-            .space
-            .surface_under((x as f64, y as f64), WindowSurfaceType::ALL)
-        {
-            self.focused_surface.borrow_mut().replace(s);
-            return;
-        }
-        self.focused_surface.borrow_mut().take();
-    }
-
     fn reposition_popup(
         &mut self,
         s_popup: PopupSurface,
@@ -1010,14 +1004,8 @@ impl WrapperSpace for AppletHostSpace {
     ) -> anyhow::Result<()> {
         s_popup.send_repositioned(token);
         s_popup.send_configure()?;
-        self.popup_manager.commit(s_popup.wl_surface());
 
         Ok(())
-    }
-
-    // TODO replace this method
-    fn next_space_event(&self) -> Rc<Cell<Option<SpaceEvent>>> {
-        Rc::new(Cell::new(None))
     }
 
     fn config(&self) -> Self::Config {
@@ -1026,7 +1014,7 @@ impl WrapperSpace for AppletHostSpace {
 
     fn spawn_clients(
         &mut self,
-        display: &mut DisplayHandle,
+        mut display: DisplayHandle,
     ) -> Result<Vec<UnixStream>, anyhow::Error> {
         if self.children.is_empty() {
             let (clients, sockets): (Vec<_>, Vec<_>) = self
@@ -1034,7 +1022,7 @@ impl WrapperSpace for AppletHostSpace {
                 .applets
                 .iter()
                 .map(|a| {
-                    let (c, s) = get_client_sock(display);
+                    let (c, s) = get_client_sock(&mut display);
                     ((c, a.name.clone()), s)
                 })
                 .unzip();
@@ -1055,9 +1043,9 @@ impl WrapperSpace for AppletHostSpace {
                                             entry.desktop_entry("HostWaylandDisplay").is_some();
                                         return Some(exec_child(
                                             exec,
-                                            Some(self.config.name()),
                                             self.log.as_ref().unwrap().clone(),
                                             client_socket.as_raw_fd(),
+                                            vec![],
                                             requests_host_wayland_display,
                                         ));
                                     }
@@ -1074,24 +1062,33 @@ impl WrapperSpace for AppletHostSpace {
         }
     }
 
-    fn add_output(
-        &mut self,
-        output: Option<&c_wl_output::WlOutput>,
-        output_info: Option<&OutputInfo>,
-        pool: AutoMemPool,
-        c_display: client::Display,
-        layer_shell: Attached<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
-        log: Logger,
-        c_surface: Attached<c_wl_surface::WlSurface>,
-        focused_surface: Rc<RefCell<Option<s_WlSurface>>>,
-    ) -> anyhow::Result<()> {
+    fn handle_output(
+            &mut self,
+            display: wayland_server::DisplayHandle,
+            env: &Environment<Env>,
+            output: Option<&c_wl_output::WlOutput>,
+            output_info: Option<&OutputInfo>,
+        ) -> anyhow::Result<()> {
+        if let (Some(_), Some(output_info)) = (output.as_ref(), output_info.as_ref()) {
+            let (s_o, _) = c_output_as_s_output::<Self>(&display, &output_info, self.log.as_ref().unwrap().clone());
+            self.space.map_output(&s_o, output_info.location);
+            if self.config.output.as_ref() != Some(&output_info.name) {
+                return Ok(());
+            }
+        } else {
+            if self.config.output.as_ref() != None {
+                return Ok(());
+            }
+        }
+
         let dimensions: Size<i32, Physical> = (30, 30).into();
         if self.output.is_some() {
             bail!("output already added!")
         }
 
+        let c_surface = env.create_surface();
         let layer_surface =
-            layer_shell.get_layer_surface(&c_surface, output, Layer::Overlay, "".to_owned());
+            self.layer_shell.as_ref().unwrap().get_layer_surface(&c_surface, output, Layer::Overlay, "".to_owned());
 
         layer_surface.set_anchor(cosmic_applet_host_config::Anchor::Bottom.into());
         layer_surface.set_keyboard_interactivity(
@@ -1109,8 +1106,7 @@ impl WrapperSpace for AppletHostSpace {
             height: dimensions.h,
         })));
         let next_render_event_handle = next_render_event.clone();
-        let logger = log.clone();
-        let start = self.start.clone();
+        let logger = self.log.as_ref().unwrap().clone();
         layer_surface.quick_assign(move |layer_surface, event, _| {
             match (event, next_render_event_handle.get()) {
                 (zwlr_layer_surface_v1::Event::Closed, _) => {
@@ -1160,11 +1156,7 @@ impl WrapperSpace for AppletHostSpace {
         self.next_space_event = next_render_event;
         self.layer_shell_wl_surface.replace(c_surface);
         self.layer_surface.replace(layer_surface);
-        self.layer_shell.replace(layer_shell);
-        self.focused_surface = focused_surface.clone();
         self.output = output.cloned().zip(output_info.cloned());
-        self.pool.replace(pool);
-        self.c_display.replace(c_display);
 
         Ok(())
     }
@@ -1178,14 +1170,6 @@ impl WrapperSpace for AppletHostSpace {
             a.layer_surface.destroy();
             a.layer_shell_wl_surface.destroy();
         }
-    }
-
-    fn space(&mut self) -> &mut Space {
-        &mut self.space
-    }
-
-    fn popup_manager(&mut self) -> &mut PopupManager {
-        &mut self.popup_manager
     }
 
     fn raise_window(&mut self, w: &Window, activate: bool) {
@@ -1214,7 +1198,7 @@ impl WrapperSpace for AppletHostSpace {
             return;
         };
 
-        let applet_name = &active_applet.name;
+        // let applet_name = &active_applet.name;
         // let activated = match w.toplevel() {
         //     Kind::Xdg(t) => t
         //         .current_state()
@@ -1232,10 +1216,9 @@ impl WrapperSpace for AppletHostSpace {
                     .get()
                     .map(|e| match e {
                         SpaceEvent::Configure {
-                            first,
                             width,
                             height,
-                            serial: _serial,
+                            ..
                         } => (width, height),
                         SpaceEvent::WaitConfigure { width, height, .. } => (width, height),
                         _ => active_applet.dimensions.into(),
@@ -1264,10 +1247,9 @@ impl WrapperSpace for AppletHostSpace {
                     .get()
                     .map(|e| match e {
                         SpaceEvent::Configure {
-                            first,
                             width,
                             height,
-                            serial: _serial,
+                            ..
                         } => (width, height).into(),
                         SpaceEvent::WaitConfigure { width, height, .. } => (width, height).into(),
                         _ => active_applet.dimensions,
@@ -1300,7 +1282,6 @@ impl WrapperSpace for AppletHostSpace {
             .find(|p| p.s_surface.wl_surface() == s)
         {
             p.dirty = true;
-            self.popup_manager.commit(s);
         }
     }
 
@@ -1316,10 +1297,157 @@ impl WrapperSpace for AppletHostSpace {
         }
     }
 
-    fn keyboard_focus_lost(&mut self) {
-        self.close_popups();
-        self.active_applets.retain(|a| !a.config.hide_on_focus_loss);
+    fn setup(
+        &mut self,
+        dh: wayland_server::DisplayHandle,
+        env: &Environment<Env>,
+        c_display: client::Display,
+        c_focused_surface: ClientFocus,
+        c_hovered_surface: ClientFocus,
+    ) {
+        let layer_shell = env.require_global::<zwlr_layer_shell_v1::ZwlrLayerShellV1>();
+        let pool = env
+            .create_auto_pool()
+            .expect("Failed to create a memory pool!");
+
+        self.layer_shell.replace(layer_shell);
+        self.pool.replace(pool);
+        self.c_focused_surface = c_focused_surface;
+        self.c_hovered_surface = c_hovered_surface;
+        self.c_display.replace(c_display);
+        self.handle_output(dh.clone(), &env, None, None).unwrap();
+
     }
+
+    fn keyboard_leave(&mut self, _: &str, s: Option<c_wl_surface::WlSurface>) {
+        self.close_popups();
+        self.active_applets.retain(|a| !a.config.hide_on_focus_loss && Some(&*a.layer_shell_wl_surface) != s.as_ref());
+    }
+
+    // TODO multi seat handling?
+    
+    fn keyboard_enter(
+        &mut self,
+        _: &str,
+        surface: c_wl_surface::WlSurface,
+    ) -> Option<s_WlSurface> {
+        self.active_applets.iter().find_map(|a| if &*a.layer_shell_wl_surface == &surface {
+            Some(a.s_wl_surface.clone())
+        } else {
+            None
+        })
+    }
+
+    fn pointer_leave(&mut self, seat_name: &str, _surface: Option<c_wl_surface::WlSurface>) {
+        self.s_hovered_surface
+        .retain(|focus| focus.seat_name != seat_name);
+    }
+
+    fn pointer_enter(
+        &mut self,
+        dim: (i32, i32),
+        seat_name: &str,
+        surface: c_wl_surface::WlSurface,
+    ) -> Option<xdg_shell_wrapper::server_state::ServerPointerFocus> {
+        self.update_pointer(dim, seat_name, surface)
+
+        // self.s_focused_surface = self.active_applets.iter().find_map(|a| if Some(&*a.layer_shell_wl_surface) == surface.as_ref() {
+        //     Some(a.s_wl_surface.clone())
+        // } else {
+        //     None
+        // });
+        
+    }
+
+    // TODO fix this
+    ///  update active window based on pointer location
+    fn update_pointer(
+        &mut self,
+        (x, y): (i32, i32),
+        seat_name: &str,
+        surface: c_wl_surface::WlSurface,
+    ) -> Option<xdg_shell_wrapper::server_state::ServerPointerFocus> {
+        let mut prev_hover = self
+            .s_hovered_surface
+            .iter_mut()
+            .enumerate()
+            .find(|(_, f)| f.seat_name == seat_name);
+        let prev_kbd = self
+            .s_focused_surface
+            .iter_mut()
+            .find(|f| f.1 == seat_name);
+
+        // first check if the motion is on a popup's client surface
+        if let Some(p) = self.active_applets.iter().map(|a| a.popups.iter()).flatten()
+            .find(|p| &p.c_wl_surface == &surface)
+        {
+            let geo = smithay::desktop::PopupKind::  Xdg(p.s_surface.clone()).geometry();
+            // special handling for popup bc they exist on their own client surface
+
+            if let Some(prev_kbd) = prev_kbd {
+                prev_kbd.0 = p.s_surface.wl_surface().clone();
+            } else {
+                self.s_focused_surface.push((p.s_surface.wl_surface().clone(), seat_name.to_string()));
+            }
+            if let Some((_, prev_foc)) = prev_hover.as_mut() {
+                prev_foc.c_pos = p.position.into();
+                prev_foc.s_pos = p.position - geo.loc;
+
+                prev_foc.surface = p.s_surface.wl_surface().clone();
+                Some(prev_foc.clone())
+            } else {
+                self.s_hovered_surface.push(ServerPointerFocus {
+                    surface: p.s_surface.wl_surface().clone(),
+                    seat_name: seat_name.to_string(),
+                    c_pos: p.position.into(),
+                    s_pos: p.position - geo.loc,
+                });
+                self.s_hovered_surface.last().cloned()
+            }
+
+        } else {
+            // if not on this panel's client surface exit
+            if self
+                .layer_shell_wl_surface
+                .as_ref()
+                .map(|s| **s != surface)
+                .unwrap_or(true)
+            {
+                return None;
+            }   
+            if let Some((w, s, p)) = self
+                .space
+                .surface_under((x as f64, y as f64), WindowSurfaceType::ALL)
+            {
+                if let Some(prev_kbd) = prev_kbd {
+                    prev_kbd.0 = w.toplevel().wl_surface().clone();
+                } else {
+                    self.s_focused_surface.push((w.toplevel().wl_surface().clone(), seat_name.to_string()));
+                }
+                if let Some((_, prev_foc)) = prev_hover.as_mut() {
+                    prev_foc.s_pos = p;
+                    prev_foc.c_pos = w.geometry().loc;
+                    prev_foc.surface = s.clone();
+                    Some(prev_foc.clone())
+                } else {
+                    self.s_hovered_surface.push(ServerPointerFocus {
+                        surface: s,
+                        seat_name: seat_name.to_string(),
+                        c_pos: w.geometry().loc,
+                        s_pos: (x, y).into(),
+                    });
+                    self.s_hovered_surface.last().cloned()
+                }
+            } else {
+                if let Some((prev_i, _)) = prev_hover {
+                    self.s_hovered_surface.swap_remove(prev_i);
+                }
+                None
+            }
+        }
+    }
+
+
 }
 
 impl Drop for AppletHostSpace {

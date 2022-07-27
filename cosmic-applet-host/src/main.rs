@@ -1,16 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0-only
 
-use std::process::Command;
-
 use anyhow::Result;
-use sctk::reexports::protocols::wlr::unstable::layer_shell::v1::client::zwlr_layer_shell_v1;
-use shlex::Shlex;
-use slog::{o, trace, Drain};
+use slog::{o, Drain};
 use smithay::reexports::{calloop, wayland_server::Display};
 use xdg_shell_wrapper::{run, shared_state::GlobalState};
 use zbus::blocking::ConnectionBuilder;
-
-use cosmic_applet_host_config::AppletHostConfig;
 
 use crate::calloop::channel::Event;
 use crate::dbus::AppletHostServer;
@@ -30,7 +24,7 @@ fn main() -> Result<()> {
     slog_stdlog::init().expect("Could not setup log backend");
 
     let arg = std::env::args().nth(1);
-    let usage = "USAGE: cosmic-applet-host <profile name>";
+    let usage = "USAGE: cosmic-applet-host OR cosmic-applet-host <profile name>";
     let config = match arg.as_ref().map(|s| &s[..]) {
         Some(arg) if arg == "--help" || arg == "-h" => {
             println!("{}", usage);
@@ -72,10 +66,10 @@ fn main() -> Result<()> {
                     Event::Msg(AppletHostEvent::Name(name)) => {
                         let GlobalState {
                             space,
-                            desktop_client_state,
+                            client_state,
                             ..
                         } = &mut state.0;
-                        let env_handle = &desktop_client_state.env_handle;
+                        let env_handle = &client_state.env_handle;
                         let _ = space.toggle_applet(&name, &env_handle);
                     }
                     Event::Closed => {

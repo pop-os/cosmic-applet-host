@@ -10,7 +10,7 @@ use wayland_protocols::wlr::unstable::layer_shell::v1::client::{
     zwlr_layer_shell_v1, zwlr_layer_surface_v1,
 };
 use xdg::BaseDirectories;
-use xdg_shell_wrapper_config::{KeyboardInteractivity, Layer, WrapperConfig};
+use xdg_shell_wrapper_config::{KeyboardInteractivity, Layer, WrapperConfig, WrapperOutput};
 
 /// Edge to which the panel is anchored
 #[derive(Debug, Deserialize, Serialize, Copy, Clone)]
@@ -274,11 +274,14 @@ impl AppletHostConfig {
 }
 
 impl WrapperConfig for AppletHostConfig {
-    fn output(&self) -> Option<String> {
-        self.output.clone()
-    }
-
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn outputs(&self) -> xdg_shell_wrapper_config::WrapperOutput {
+        match &self.output {
+            Some(o) => WrapperOutput::Name(vec![o.clone()]),
+            None => WrapperOutput::Name(vec![]),
+        }    
     }
 }
