@@ -1,9 +1,5 @@
 use smithay::reexports::calloop::channel::SyncSender;
-use std::error::Error;
-use zbus::{
-    blocking::{ConnectionBuilder, ObjectServer},
-    dbus_interface, fdo, SignalContext,
-};
+use zbus::dbus_interface;
 
 use event_listener::Event;
 
