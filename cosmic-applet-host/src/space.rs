@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::{bail};
 use freedesktop_desktop_entry::{self, DesktopEntry, Iter};
-use itertools::{Itertools};
+use itertools::{Itertools, izip};
 use sctk::{
     environment::Environment,
     output::OutputInfo,
@@ -65,15 +65,15 @@ use smithay::{
     },
     utils::{Logical, Physical, Rectangle, Size},
     wayland::{
-        shell::xdg::{PopupSurface, PositionerState},
+        shell::xdg::{PopupSurface, PositionerState}, output::Output,
     },
 };
 use smithay::desktop::space::RenderZindex;
 use wayland_egl::WlEglSurface;
 use xdg_shell_wrapper::{
-    client_state::{Env, ClientFocus},
+    client_state::{Env, ClientFocus, FocusStatus},
     space::{ClientEglSurface, Popup, PopupState, SpaceEvent, Visibility, WrapperSpace},
-    util::{exec_child, get_client_sock}, server_state::{ServerFocus, ServerPtrFocus, ServerPointerFocus}, output::c_output_as_s_output,
+    util::{exec_child, get_client_sock}, server_state::{ServerFocus, ServerPtrFocus, ServerPointerFocus},
 };
 
 use cosmic_applet_host_config::{AppletConfig, AppletHostConfig};
@@ -214,7 +214,7 @@ pub struct AppletHostSpace {
     /// visibility state of the panel / panel
     pub(crate) pool: Option<AutoMemPool>,
     pub(crate) layer_shell: Option<Attached<zwlr_layer_shell_v1::ZwlrLayerShellV1>>,
-    pub(crate) output: Option<(c_wl_output::WlOutput, OutputInfo)>,
+    pub(crate) output: Option<(c_wl_output::WlOutput, Output, OutputInfo)>,
     pub(crate) c_display: Option<client::Display>,
     pub(crate) egl_display: Option<EGLDisplay>,
     pub(crate) renderer: Option<Gles2Renderer>,
@@ -805,47 +805,18 @@ impl WrapperSpace for AppletHostSpace {
     }
 
     fn handle_press(&mut self, seat_name: &str) -> Option<s_WlSurface> {
-        if let Some(prev_foc) = {
-            let c_hovered_surface = self.c_hovered_surface.borrow();
-
-            match c_hovered_surface
-                .iter()
-                .enumerate()
-                .find(|(_, f)| f.1 == seat_name)
-            {
-                Some((i, f)) => Some((i, f.0.clone())),
-                None => {
-                    None
-                },
+        if let Some(f) = self.s_hovered_surface.iter().find_map(|h| {
+            if h.seat_name.as_str() == seat_name {
+                Some(h.surface.clone())
+            } else {
+                None
             }
-        } {
-            // close popups when panel is pressed
-            if self.active_applets.iter().any(|a| *a.layer_shell_wl_surface == prev_foc.1) && !self.active_applets.iter().map(|a| a.popups.iter()).flatten().next().is_none()
-            {
-                self.close_popups();
-            }
-
-            self.s_hovered_surface.iter().find_map(|h| {
-                if h.seat_name.as_str() == seat_name {
-                    Some(h.surface.clone())
-                } else {
-                    None
-                }
-            })
+        }) {
+            Some(f)
         } else {
-            // no hover found
-            // if has keyboard focus remove it and close popups
             self.keyboard_leave(seat_name, None);
             None
         }
-        // let matches_any_client = self
-        //     .active_applets
-        //     .iter()
-        //     .any(|a| *a.layer_shell_wl_surface == *c_focused_surface);
-        // if self.focused_surface.borrow().is_none() && matches_any_client {
-        //     self.close_popups()
-        // }
-        // false
     }
 
     fn add_window(&mut self, w: Window) {
@@ -1064,14 +1035,14 @@ impl WrapperSpace for AppletHostSpace {
 
     fn handle_output(
             &mut self,
-            display: wayland_server::DisplayHandle,
+            _display: wayland_server::DisplayHandle,
             env: &Environment<Env>,
-            output: Option<&c_wl_output::WlOutput>,
+            c_output: Option<c_wl_output::WlOutput>,
+            s_output: std::option::Option<smithay::wayland::output::Output>,
             output_info: Option<&OutputInfo>,
         ) -> anyhow::Result<()> {
-        if let (Some(_), Some(output_info)) = (output.as_ref(), output_info.as_ref()) {
-            let (s_o, _) = c_output_as_s_output::<Self>(&display, &output_info, self.log.as_ref().unwrap().clone());
-            self.space.map_output(&s_o, output_info.location);
+        if let (Some(_), Some(s_output), Some(output_info)) = (c_output.as_ref(), s_output.as_ref(), output_info.as_ref()) {
+            self.space.map_output(s_output, output_info.location);
             if self.config.output.as_ref() != Some(&output_info.name) {
                 return Ok(());
             }
@@ -1088,7 +1059,7 @@ impl WrapperSpace for AppletHostSpace {
 
         let c_surface = env.create_surface();
         let layer_surface =
-            self.layer_shell.as_ref().unwrap().get_layer_surface(&c_surface, output, Layer::Overlay, "".to_owned());
+            self.layer_shell.as_ref().unwrap().get_layer_surface(&c_surface, c_output.as_ref(), Layer::Overlay, "".to_owned());
 
         layer_surface.set_anchor(cosmic_applet_host_config::Anchor::Bottom.into());
         layer_surface.set_keyboard_interactivity(
@@ -1156,7 +1127,8 @@ impl WrapperSpace for AppletHostSpace {
         self.next_space_event = next_render_event;
         self.layer_shell_wl_surface.replace(c_surface);
         self.layer_surface.replace(layer_surface);
-        self.output = output.cloned().zip(output_info.cloned());
+        self.output = izip!(c_output.clone().into_iter(), s_output.clone().into_iter(), output_info.cloned()).next();
+
 
         Ok(())
     }
@@ -1206,7 +1178,7 @@ impl WrapperSpace for AppletHostSpace {
         //         .contains(xdg_toplevel::State::Activated),
         // };
         if active_applet.dimensions != size {
-            if let Some((_, _)) = &self.output {
+            if let Some((_, _, _)) = &self.output {
                 // TODO improve this for when there are changes to the lists of plugins while running
                 let pending_dimensions = active_applet
                     .pending_dimensions
@@ -1315,13 +1287,14 @@ impl WrapperSpace for AppletHostSpace {
         self.c_focused_surface = c_focused_surface;
         self.c_hovered_surface = c_hovered_surface;
         self.c_display.replace(c_display);
-        self.handle_output(dh.clone(), &env, None, None).unwrap();
-
+        self.handle_output(dh.clone(), &env, None, None, None).unwrap();
     }
 
-    fn keyboard_leave(&mut self, _: &str, s: Option<c_wl_surface::WlSurface>) {
-        self.close_popups();
-        self.active_applets.retain(|a| !a.config.hide_on_focus_loss && Some(&*a.layer_shell_wl_surface) != s.as_ref());
+    fn keyboard_leave(&mut self, seat_name: &str, s: Option<c_wl_surface::WlSurface>) {
+        if self.c_focused_surface.borrow().iter().any(|f| f.1 == seat_name && Some(&f.0) == s.as_ref() && matches!(f.2, FocusStatus::Focused)) {
+            self.close_popups();
+            self.active_applets.retain(|a| !a.config.hide_on_focus_loss && Some(&*a.layer_shell_wl_surface) != s.as_ref());
+        }
     }
 
     // TODO multi seat handling?
@@ -1350,13 +1323,6 @@ impl WrapperSpace for AppletHostSpace {
         surface: c_wl_surface::WlSurface,
     ) -> Option<xdg_shell_wrapper::server_state::ServerPointerFocus> {
         self.update_pointer(dim, seat_name, surface)
-
-        // self.s_focused_surface = self.active_applets.iter().find_map(|a| if Some(&*a.layer_shell_wl_surface) == surface.as_ref() {
-        //     Some(a.s_wl_surface.clone())
-        // } else {
-        //     None
-        // });
-        
     }
 
     // TODO fix this
@@ -1407,11 +1373,7 @@ impl WrapperSpace for AppletHostSpace {
 
         } else {
             // if not on this panel's client surface exit
-            if self
-                .layer_shell_wl_surface
-                .as_ref()
-                .map(|s| **s != surface)
-                .unwrap_or(true)
+            if !self.active_applets.iter().any(|a| &*a.layer_shell_wl_surface == &surface)
             {
                 return None;
             }   

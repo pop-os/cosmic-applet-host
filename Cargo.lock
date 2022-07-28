@@ -1142,7 +1142,7 @@ checksum = "2fd0db749597d91ff862fd1d55ea87f7855a744a8425a64695b6fca237d1dad1"
 [[package]]
 name = "smithay"
 version = "0.3.0"
-source = "git+https://github.com/smithay/smithay#efce3a275bf24cf3eb3871eeb4855b5bea11ecde"
+source = "git+https://github.com/smithay/smithay#32d9be78fe672130f6cfabcc52f1c911f08428fe"
 dependencies = [
  "appendlist",
  "bitflags",
@@ -1639,7 +1639,7 @@ dependencies = [
 [[package]]
 name = "xdg-shell-wrapper"
 version = "0.1.0"
-source = "git+https://github.com/pop-os/xdg-shell-wrapper#3ae32f7ee613e6900dd169c8e0d991b71bbfeab2"
+source = "git+https://github.com/pop-os/xdg-shell-wrapper#0bc3ce05e867b8ed0e9936a9d3f6e8fa13f80ae8"
 dependencies = [
  "anyhow",
  "itertools",
@@ -1659,7 +1659,7 @@ dependencies = [
 [[package]]
 name = "xdg-shell-wrapper-config"
 version = "0.1.0"
-source = "git+https://github.com/pop-os/xdg-shell-wrapper#3ae32f7ee613e6900dd169c8e0d991b71bbfeab2"
+source = "git+https://github.com/pop-os/xdg-shell-wrapper#0bc3ce05e867b8ed0e9936a9d3f6e8fa13f80ae8"
 dependencies = [
  "serde",
  "wayland-protocols 0.29.4",
