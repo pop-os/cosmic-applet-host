@@ -1345,8 +1345,6 @@ impl WrapperSpace for AppletHostSpace {
         seat_name: &str,
         surface: c_wl_surface::WlSurface,
     ) -> Option<s_WlSurface> {
-        println!("entering");
-
         self.active_applets.iter().find_map(|a| {
             if &*a.layer_shell_wl_surface == &surface {
                 let prev_kbd = self.s_focused_surface.iter_mut().find(|f| f.1 == seat_name);
