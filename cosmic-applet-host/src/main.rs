@@ -31,11 +31,8 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
         Some(profile) => cosmic_applet_host_config::AppletHostConfig::load(profile),
-        None => {
-            Default::default()
-        }
+        None => Default::default(),
     };
-
 
     let event_loop = calloop::EventLoop::try_new()?;
     let (tx, rx) = calloop::channel::sync_channel(100);

@@ -208,7 +208,9 @@ impl AppletHostConfig {
         let mut configs = Self::configs();
         configs.insert(name.into(), AppletHostConfig::default());
         let xdg = BaseDirectories::new()?;
-        let f = xdg.place_config_file("cosmic-applet-host/config.ron").unwrap();
+        let f = xdg
+            .place_config_file("cosmic-applet-host/config.ron")
+            .unwrap();
         let f = File::create(f)?;
         ron::ser::to_writer_pretty(&f, &configs, ron::ser::PrettyConfig::default())?;
         return Ok(());
@@ -282,6 +284,6 @@ impl WrapperConfig for AppletHostConfig {
         match &self.output {
             Some(o) => WrapperOutput::Name(vec![o.clone()]),
             None => WrapperOutput::Name(vec![]),
-        }    
+        }
     }
 }
