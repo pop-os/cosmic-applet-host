@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use slog::{o, Drain};
-use smithay::reexports::{calloop, wayland_server::Display};
+use smithay::reexports::calloop;
 use xdg_shell_wrapper::{run, shared_state::GlobalState};
 use zbus::blocking::ConnectionBuilder;
 
@@ -55,17 +55,14 @@ fn main() -> Result<()> {
             rx,
             |e,
              _,
-             state: &mut (
-                GlobalState<AppletHostSpace>,
-                Display<GlobalState<AppletHostSpace>>,
-            )| {
+             state: &mut GlobalState<AppletHostSpace>| {
                 match e {
                     Event::Msg(AppletHostEvent::Name(name)) => {
                         let GlobalState {
                             space,
                             client_state,
                             ..
-                        } = &mut state.0;
+                        } = state;
                         let env_handle = &client_state.env_handle;
                         let _ = space.toggle_applet(&name, &env_handle);
                     }
