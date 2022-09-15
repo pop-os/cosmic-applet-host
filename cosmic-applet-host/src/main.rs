@@ -3,6 +3,7 @@
 use anyhow::Result;
 use slog::{o, Drain};
 use smithay::reexports::calloop;
+use xdg_shell_wrapper::client_state::ClientState;
 use xdg_shell_wrapper::{run, shared_state::GlobalState};
 use zbus::blocking::ConnectionBuilder;
 
@@ -51,28 +52,33 @@ fn main() -> Result<()> {
 
     event_loop
         .handle()
-        .insert_source(
-            rx,
-            |e,
-             _,
-             state: &mut GlobalState<AppletHostSpace>| {
-                match e {
-                    Event::Msg(AppletHostEvent::Name(name)) => {
-                        let GlobalState {
-                            space,
-                            client_state,
-                            ..
-                        } = state;
-                        let env_handle = &client_state.env_handle;
-                        let _ = space.toggle_applet(&name, &env_handle);
-                    }
-                    Event::Closed => {
-                        // TODO gracefully shut down
-                        todo!()
-                    }
+        .insert_source(rx, |e, _, state: &mut GlobalState<AppletHostSpace>| {
+            let GlobalState {
+                space,
+                client_state:
+                    ClientState {
+                        queue_handle,
+                        compositor_state,
+                        layer_state,
+                        ..
+                    },
+                ..
+            } = state;
+            match e {
+                Event::Msg(AppletHostEvent::ToggleName(name)) => {
+                    let _ =
+                        space.toggle_applet(&name, &compositor_state, layer_state, queue_handle);
                 }
-            },
-        )
+                Event::Msg(AppletHostEvent::HideName(name)) => {
+                    let _ =
+                        space.hide_applet(&name);
+                }
+                Event::Closed => {
+                    // TODO gracefully shut down
+                    todo!()
+                }
+            }
+        })
         .expect("failed to insert dbus event source");
     run(AppletHostSpace::new(config, log), event_loop)?;
     Ok(())

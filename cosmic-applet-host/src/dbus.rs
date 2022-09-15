@@ -5,7 +5,8 @@ use event_listener::Event;
 
 #[derive(Debug)]
 pub(crate) enum AppletHostEvent {
-    Name(String),
+    ToggleName(String),
+    HideName(String),
 }
 
 #[derive(Debug)]
@@ -17,7 +18,11 @@ pub(crate) struct AppletHostServer {
 #[dbus_interface(name = "com.system76.CosmicAppletHost")]
 impl AppletHostServer {
     fn toggle(&self, name: &str) {
-        let _ = self.tx.send(AppletHostEvent::Name(name.to_string()));
+        let _ = self.tx.send(AppletHostEvent::ToggleName(name.to_string()));
+    }
+
+    fn hide(&self, name: &str) {
+        let _ = self.tx.send(AppletHostEvent::HideName(name.to_string()));
     }
 
     fn done(&self) {

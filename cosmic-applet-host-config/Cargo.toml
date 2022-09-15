@@ -6,10 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wayland-protocols = { version = "0.29" , features = ["client", "unstable_protocols"] }
+wayland-protocols-wlr = { git = "https://github.com/smithay/wayland-rs", features = ["client"], rev = "f4740097ba42b1ec5d439c82eff4e748e38178d2" }
 anyhow = "1.0.53"
-ron = "0.7.0"
-serde = { version = "1.0.136", features = ["derive"] }
+ron = "0.8.0"
+serde = { version = "1.0.144", features = ["derive"] }
 xdg = "2.4.0"
-# xdg-shell-wrapper-config = { path = "../../xdg-shell-wrapper/xdg-shell-wrapper-config"}
-xdg-shell-wrapper-config = { git = "https://github.com/pop-os/xdg-shell-wrapper" }
+xdg-shell-wrapper-config = { git = "https://github.com/pop-os/xdg-shell-wrapper", branch = "master_jammy" }
+# xdg-shell-wrapper-config = { path = "../../xdg-shell-wrapper/xdg-shell-wrapper-config" }

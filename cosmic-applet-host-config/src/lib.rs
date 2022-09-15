@@ -6,9 +6,8 @@ use std::ops::Range;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use wayland_protocols::wlr::unstable::layer_shell::v1::client::{
-    zwlr_layer_shell_v1, zwlr_layer_surface_v1,
-};
+use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+
 use xdg::BaseDirectories;
 use xdg_shell_wrapper_config::{KeyboardInteractivity, Layer, WrapperConfig, WrapperOutput};
 
@@ -283,7 +282,7 @@ impl WrapperConfig for AppletHostConfig {
     fn outputs(&self) -> xdg_shell_wrapper_config::WrapperOutput {
         match &self.output {
             Some(o) => WrapperOutput::Name(vec![o.clone()]),
-            None => WrapperOutput::Name(vec![]),
+            None => WrapperOutput::All,
         }
     }
 }
