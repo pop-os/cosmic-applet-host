@@ -58,10 +58,10 @@ use smithay::{
         },
         wayland_server::{
             self, protocol::wl_surface::WlSurface as s_WlSurface, Client, DisplayHandle, Resource,
-        },
+        }, wayland_protocols::xdg::shell::server::xdg_toplevel,
     },
     utils::{Logical, Physical, Rectangle, Size},
-    wayland::shell::xdg::{PopupSurface, PositionerState},
+    wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface},
 };
 use smithay::{
     desktop::space::RenderZindex,
@@ -88,7 +88,7 @@ pub struct ActiveApplet {
     /// XXX implicitly dropped first
     pub(crate) egl_surface: Option<Rc<EGLSurface>>,
 
-    pub(crate) s_wl_surface: s_WlSurface,
+    pub(crate) s_window: Window,
     pub(crate) name: String,
     pub(crate) layer_surface: LayerSurface,
     pub(crate) w_accumulated_damage: Vec<Vec<Rectangle<i32, Physical>>>,
@@ -153,7 +153,7 @@ impl ActiveApplet {
                 }
             }
         }
-        true
+        !self.to_destroy
     }
 }
 
@@ -260,14 +260,7 @@ impl AppletHostSpace {
         let log_clone = self.log.clone().unwrap();
 
         for active_applet in &mut self.active_applets {
-            let w = if let Some(w) = self
-                .space
-                .window_for_surface(&active_applet.s_wl_surface, WindowSurfaceType::TOPLEVEL)
-            {
-                w
-            } else {
-                continue;
-            };
+            let w = &active_applet.s_window;
 
             let o = if let Some(o) = self.space.outputs_for_window(w).pop() {
                 o
@@ -286,25 +279,25 @@ impl AppletHostSpace {
             let output_geo =
                 Rectangle::from_loc_and_size(o.current_location(), output_size.to_logical(1));
 
-            if active_applet.to_destroy {
-                let _ = renderer.unbind();
-                renderer.bind(active_applet.egl_surface.as_ref().unwrap().clone())?;
-                let _ = renderer.render(
-                    active_applet.dimensions.to_physical(1),
-                    smithay::utils::Transform::Flipped180,
-                    |_: &mut Gles2Renderer, frame| {
-                        frame
-                            .clear(
-                                clear_color,
-                                &[],
-                            )
-                            .expect("Failed to clear frame.");
-                    }
-                );
-                continue;
-            }
+            // if active_applet.to_destroy {
+            //     let _ = renderer.unbind();
+            //     renderer.bind(active_applet.egl_surface.as_ref().unwrap().clone())?;
+            //     let _ = renderer.render(
+            //         active_applet.dimensions.to_physical(1),
+            //         smithay::utils::Transform::Flipped180,
+            //         |_: &mut Gles2Renderer, frame| {
+            //             frame
+            //                 .clear(
+            //                     clear_color,
+            //                     &[],
+            //                 )
+            //                 .expect("Failed to clear frame.");
+            //         }
+            //     );
+            //     continue;
+            // }
 
-            else if active_applet.should_render {
+            if active_applet.should_render {
                 // TODO remove the permanent full clear after fixing the issue where resized windows aren't fully rendered
                 let cur_damage = if active_applet.full_clear > 0 {
                     vec![]
@@ -391,14 +384,7 @@ impl AppletHostSpace {
         }
 
         for active_applet in &mut self.active_applets {
-            let w = if let Some(w) = self
-                .space
-                .window_for_surface(&active_applet.s_wl_surface, WindowSurfaceType::TOPLEVEL)
-            {
-                w
-            } else {
-                continue;
-            };
+            let w = &active_applet.s_window;
 
             let o = if let Some(o) = self.space.outputs_for_window(w).pop() {
                 o
@@ -570,8 +556,13 @@ impl AppletHostSpace {
             .iter()
             .position(|a| a.name == applet_name.to_string())
         {
-            let _old_active_applet = &mut self.active_applets[i];
-            _old_active_applet.to_destroy = true;
+            let old_active_applet = &mut self.active_applets[i];
+            let Kind::Xdg(t) = old_active_applet.s_window.toplevel();
+            t.with_pending_state(|t| {
+                t.states.unset(xdg_toplevel::State::Activated);
+            });
+            t.send_configure();    
+            old_active_applet.to_destroy = true;
             return Ok(());
         }
         bail!("Applet is not active")
@@ -617,8 +608,6 @@ impl AppletHostSpace {
         if let Some(w) = w {
             // TODO is this necessary?
             // self.s_focused_surface.replace(w.toplevel().wl_surface().clone());
-            self.space.raise_window(&w, true);
-            let s_wl_surface = w.toplevel().wl_surface();
             let dimensions = w.bbox().size;
 
             let layer = match self.config().layer(applet_name).unwrap() {
@@ -685,7 +674,7 @@ impl AppletHostSpace {
                 layer_surface,
                 egl_surface: None,
                 w_accumulated_damage: vec![],
-                s_wl_surface: s_wl_surface.clone(),
+                s_window: w.clone(),
                 popups: Default::default(),
                 pending_dimensions: None,
                 full_clear: 4,
@@ -695,7 +684,11 @@ impl AppletHostSpace {
                 config: self.config.applet(applet_name).unwrap().clone(),
                 to_destroy: false,
             });
-            self.space.raise_window(&w, true);
+            let Kind::Xdg(t) = w.toplevel();
+            t.with_pending_state(|t| {
+                t.states.set(xdg_toplevel::State::Activated);
+            });
+            t.send_configure();
             return Ok(());
         }
         anyhow::bail!("No client with the requested name!");
@@ -766,9 +759,7 @@ impl WrapperSpace for AppletHostSpace {
                 )
             });
             let _ = self.render(time);
-            self.active_applets.retain(|a| !a.to_destroy);
         }
-
         self.last_dirty.unwrap_or_else(|| self.start)
     }
 
@@ -1025,7 +1016,6 @@ impl WrapperSpace for AppletHostSpace {
         };
         self.space
             .map_window(&w, (0, 0), self.z_index(&name).map(|z| z as u8), false);
-        // self.space.raise_window(&w, false);
         for w in self.space.windows() {
             w.configure();
         }
@@ -1066,7 +1056,7 @@ impl WrapperSpace for AppletHostSpace {
         let active_applet = if let Some(a) = self
             .active_applets
             .iter_mut()
-            .find(|a| Some(&a.s_wl_surface) == s_surface.get_parent_surface().as_ref())
+            .find(|a| Some(a.s_window.toplevel().wl_surface()) == s_surface.get_parent_surface().as_ref())
         {
             a
         } else {
@@ -1321,7 +1311,7 @@ impl WrapperSpace for AppletHostSpace {
         let active_applet = if let Some(a) = self
             .active_applets
             .iter_mut()
-            .find(|a| &a.s_wl_surface == s)
+            .find(|a| a.s_window.toplevel().wl_surface() == s)
         {
             a
         } else {
@@ -1475,14 +1465,23 @@ impl WrapperSpace for AppletHostSpace {
     fn keyboard_leave(&mut self, seat_name: &str, c_s: Option<c_wl_surface::WlSurface>) {
         if self.s_focused_surface.iter().any(|f| f.1 == seat_name) {
             self.close_popups();
-            self.active_applets.retain(|a| {
-                !a.config.hide_on_focus_loss
-                    || (!matches!(c_s, None) && Some(a.layer_surface.wl_surface()) != c_s.as_ref())
-                    || self
-                        .s_focused_surface
-                        .iter()
-                        .any(|f| f.1 != seat_name || a.s_wl_surface != f.0)
-            });
+            for a in &mut self.active_applets {
+                let should_remove =  !a.config.hide_on_focus_loss
+                || (!matches!(c_s, None) && Some(a.layer_surface.wl_surface()) != c_s.as_ref())
+                || self
+                    .s_focused_surface
+                    .iter()
+                    .any(|f| f.1 != seat_name || a.s_window.toplevel().wl_surface() != &f.0);
+                if should_remove {
+                    // cleanup
+                    let Kind::Xdg(t) = a.s_window.toplevel();
+                    t.with_pending_state(|t| {
+                        t.states.unset(xdg_toplevel::State::Activated);
+                    });
+                    t.send_configure();
+                    a.to_destroy = true;
+                }
+            }
             self.s_focused_surface.retain(|f| f.1 != seat_name);
         }
     }
@@ -1498,12 +1497,12 @@ impl WrapperSpace for AppletHostSpace {
             if a.layer_surface.wl_surface() == &surface {
                 let prev_kbd = self.s_focused_surface.iter_mut().find(|f| f.1 == seat_name);
                 if let Some(prev_kbd) = prev_kbd {
-                    prev_kbd.0 = a.s_wl_surface.clone();
+                    prev_kbd.0 = a.s_window.toplevel().wl_surface().clone();
                 } else {
                     self.s_focused_surface
-                        .push((a.s_wl_surface.clone(), seat_name.to_string()));
+                        .push((a.s_window.toplevel().wl_surface().clone(), seat_name.to_string()));
                 }
-                Some(a.s_wl_surface.clone())
+                Some(a.s_window.toplevel().wl_surface().clone())
             } else {
                 None
             }
@@ -1646,6 +1645,7 @@ impl WrapperSpace for AppletHostSpace {
             self.layer_surface.take();
             self.layer_shell_wl_surface.take();
         } else {
+            // XXX will this cause issues?
             self.active_applets
                 .retain(|a| a.layer_surface.wl_surface() != layer.wl_surface())
         }
