@@ -7,6 +7,7 @@ use event_listener::Event;
 pub(crate) enum AppletHostEvent {
     ToggleName(String),
     HideName(String),
+    ShowName(String),
 }
 
 #[derive(Debug)]
@@ -23,6 +24,10 @@ impl AppletHostServer {
 
     fn hide(&self, name: &str) {
         let _ = self.tx.send(AppletHostEvent::HideName(name.to_string()));
+    }
+
+    fn show(&self, name: &str) {
+        let _ = self.tx.send(AppletHostEvent::ShowName(name.to_string()));
     }
 
     fn done(&self) {

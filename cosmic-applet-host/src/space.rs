@@ -153,7 +153,7 @@ impl ActiveApplet {
                 }
             }
         }
-        !self.to_destroy
+        true
     }
 }
 
@@ -286,7 +286,25 @@ impl AppletHostSpace {
             let output_geo =
                 Rectangle::from_loc_and_size(o.current_location(), output_size.to_logical(1));
 
-            if active_applet.should_render {
+            if active_applet.to_destroy {
+                let _ = renderer.unbind();
+                renderer.bind(active_applet.egl_surface.as_ref().unwrap().clone())?;
+                let _ = renderer.render(
+                    active_applet.dimensions.to_physical(1),
+                    smithay::utils::Transform::Flipped180,
+                    |_: &mut Gles2Renderer, frame| {
+                        frame
+                            .clear(
+                                clear_color,
+                                &[],
+                            )
+                            .expect("Failed to clear frame.");
+                    }
+                );
+                continue;
+            }
+
+            else if active_applet.should_render {
                 // TODO remove the permanent full clear after fixing the issue where resized windows aren't fully rendered
                 let cur_damage = if active_applet.full_clear > 0 {
                     vec![]
@@ -568,16 +586,17 @@ impl AppletHostSpace {
         qh: &QueueHandle<GlobalState<W>>,
     ) -> anyhow::Result<()> {
         // cleanup
-        if let Some(i) = self
-            .active_applets
-            .iter()
-            .position(|a| a.name == applet_name.to_string())
-        {
-            let _old_active_applet = &mut self.active_applets[i];
-            _old_active_applet.to_destroy = true;
-            return Ok(());
-        }
+        if self.hide_applet(applet_name).is_ok() { return Ok(()) };
+        self.show_applet(applet_name, compositor_state, layer_state, qh)
+    }
 
+    pub fn show_applet<W: WrapperSpace>(
+        &mut self,
+        applet_name: &str,
+        compositor_state: &sctk::compositor::CompositorState,
+        layer_state: &mut LayerState,
+        qh: &QueueHandle<GlobalState<W>>,
+    )  -> anyhow::Result<()> {
         let c_surface = compositor_state.create_surface(qh)?;
 
         let w = self
@@ -676,6 +695,7 @@ impl AppletHostSpace {
                 config: self.config.applet(applet_name).unwrap().clone(),
                 to_destroy: false,
             });
+            self.space.raise_window(&w, true);
             return Ok(());
         }
         anyhow::bail!("No client with the requested name!");
@@ -746,6 +766,7 @@ impl WrapperSpace for AppletHostSpace {
                 )
             });
             let _ = self.render(time);
+            self.active_applets.retain(|a| !a.to_destroy);
         }
 
         self.last_dirty.unwrap_or_else(|| self.start)
@@ -944,7 +965,6 @@ impl WrapperSpace for AppletHostSpace {
                             self.renderer.replace(new_renderer);
                             active_applet.egl_surface.replace(egl_surface);
                             self.egl_display.replace(egl_display);
-                            println!("handled new layer shell");
                         }
                         if active_applet.egl_surface.as_ref().unwrap().get_size()
                             != Some((width, height).into())

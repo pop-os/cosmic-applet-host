@@ -73,6 +73,10 @@ fn main() -> Result<()> {
                     let _ =
                         space.hide_applet(&name);
                 }
+                Event::Msg(AppletHostEvent::ShowName(name)) => {
+                    let _ =
+                        space.show_applet(&name, &compositor_state, layer_state, queue_handle);
+                }
                 Event::Closed => {
                     // TODO gracefully shut down
                     todo!()

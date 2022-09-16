@@ -27,7 +27,7 @@ clean:
 distclean: clean
 	rm -rf .cargo vendor vendor.tar
 
-$(BIN): Cargo.toml Cargo.lock ${BIN}/src/main.rs vendor-check
+$(BIN): Cargo.toml Cargo.lock ${BIN}/src/main.rs .vendor-check
 	cargo build $(ARGS) --bin ${BIN}
 
 install:
@@ -35,7 +35,7 @@ install:
 
 ## Cargo Vendoring
 
-vendor:
+.vendor:
 	rm .cargo -rf
 	mkdir -p .cargo
 	cargo vendor | head -n -1 > .cargo/config
@@ -43,7 +43,7 @@ vendor:
 	tar cf vendor.tar vendor
 	rm -rf vendor
 
-vendor-check:
+.vendor-check:
 ifeq ($(VENDOR),1)
 	rm vendor -rf && tar xf vendor.tar
 endif

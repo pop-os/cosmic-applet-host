@@ -12,7 +12,7 @@ ifeq ($(CLEAN),1)
 endif
 ifeq ($(VENDOR),1)
 	if ! ischroot; then \
-		make vendor; \
+		make .vendor; \
 	fi
 endif
 
