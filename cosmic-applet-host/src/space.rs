@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0-only
 
 use std::{
+    borrow::Borrow,
     cell::{Cell, RefCell},
     default::Default,
     ffi::OsString,
@@ -52,13 +53,14 @@ use smithay::{
     },
     output::Output,
     reexports::{
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_protocols_wlr::layer_shell::v1::client::{
             zwlr_layer_shell_v1::{self, Layer},
             zwlr_layer_surface_v1,
         },
         wayland_server::{
             self, protocol::wl_surface::WlSurface as s_WlSurface, Client, DisplayHandle, Resource,
-        }, wayland_protocols::xdg::shell::server::xdg_toplevel,
+        },
     },
     utils::{Logical, Physical, Rectangle, Size},
     wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface},
@@ -72,7 +74,7 @@ use smithay::{
 };
 use wayland_egl::WlEglSurface;
 use xdg_shell_wrapper::{
-    client_state::ClientFocus,
+    client_state::{ClientFocus, FocusStatus},
     server_state::{ServerFocus, ServerPointerFocus, ServerPtrFocus},
     shared_state::GlobalState,
     space::{
@@ -100,7 +102,7 @@ pub struct ActiveApplet {
     pub(crate) space_event: Rc<Cell<Option<SpaceEvent>>>,
     pub(crate) dimensions: Size<i32, Logical>,
     pub(crate) config: AppletConfig,
-    pub to_destroy: bool,
+    pub to_destroy: i8,
 }
 
 impl ActiveApplet {
@@ -153,7 +155,12 @@ impl ActiveApplet {
                 }
             }
         }
-        !self.to_destroy
+        if self.to_destroy == 1 {
+            self.to_destroy -= 1;
+            true
+        } else {
+            self.to_destroy != 0
+        }
     }
 }
 
@@ -279,27 +286,9 @@ impl AppletHostSpace {
             let output_geo =
                 Rectangle::from_loc_and_size(o.current_location(), output_size.to_logical(1));
 
-            // if active_applet.to_destroy {
-            //     let _ = renderer.unbind();
-            //     renderer.bind(active_applet.egl_surface.as_ref().unwrap().clone())?;
-            //     let _ = renderer.render(
-            //         active_applet.dimensions.to_physical(1),
-            //         smithay::utils::Transform::Flipped180,
-            //         |_: &mut Gles2Renderer, frame| {
-            //             frame
-            //                 .clear(
-            //                     clear_color,
-            //                     &[],
-            //                 )
-            //                 .expect("Failed to clear frame.");
-            //         }
-            //     );
-            //     continue;
-            // }
-
             if active_applet.should_render {
                 // TODO remove the permanent full clear after fixing the issue where resized windows aren't fully rendered
-                let cur_damage = if active_applet.full_clear > 0 {
+                let cur_damage = if active_applet.full_clear > 0 || active_applet.to_destroy != -1 {
                     vec![]
                 } else {
                     w.accumulated_damage(
@@ -349,16 +338,17 @@ impl AppletHostSpace {
                                 a_damage.iter().cloned().collect_vec().as_slice(),
                             )
                             .expect("Failed to clear frame.");
-
-                        let _ = draw_window(
-                            renderer,
-                            frame,
-                            w,
-                            1.0,
-                            w_loc.to_physical(1).to_f64(),
-                            &a_damage,
-                            &log_clone,
-                        );
+                        if active_applet.to_destroy == -1 {
+                            let _ = draw_window(
+                                renderer,
+                                frame,
+                                w,
+                                1.0,
+                                w_loc.to_physical(1).to_f64(),
+                                &a_damage,
+                                &log_clone,
+                            );
+                        }
                     },
                 );
                 let mut damage = damage
@@ -546,10 +536,14 @@ impl AppletHostSpace {
             .and_then(|name| self.config.applet(&name))
     }
 
-    pub fn hide_applet(
-        &mut self,
-        applet_name: &str,
-    ) -> anyhow::Result<()> {
+    pub fn hide_applet(&mut self, applet_name: &str) -> anyhow::Result<()> {
+        match self.space_event.get() {
+            Some(SpaceEvent::WaitConfigure { first, .. }) if first == true => {
+                bail!("Not ready yet!")
+            }
+            _ => {}
+        };
+
         // cleanup
         if let Some(i) = self
             .active_applets
@@ -561,8 +555,8 @@ impl AppletHostSpace {
             t.with_pending_state(|t| {
                 t.states.unset(xdg_toplevel::State::Activated);
             });
-            t.send_configure();    
-            old_active_applet.to_destroy = true;
+            t.send_configure();
+            old_active_applet.to_destroy = 1;
             return Ok(());
         }
         bail!("Applet is not active")
@@ -577,7 +571,15 @@ impl AppletHostSpace {
         qh: &QueueHandle<GlobalState<W>>,
     ) -> anyhow::Result<()> {
         // cleanup
-        if self.hide_applet(applet_name).is_ok() { return Ok(()) };
+        match self.space_event.get() {
+            Some(SpaceEvent::WaitConfigure { first, .. }) if first == true => {
+                bail!("Not ready yet!")
+            }
+            _ => {}
+        };
+        if self.hide_applet(applet_name).is_ok() {
+            return Ok(());
+        };
         self.show_applet(applet_name, compositor_state, layer_state, qh)
     }
 
@@ -587,7 +589,14 @@ impl AppletHostSpace {
         compositor_state: &sctk::compositor::CompositorState,
         layer_state: &mut LayerState,
         qh: &QueueHandle<GlobalState<W>>,
-    )  -> anyhow::Result<()> {
+    ) -> anyhow::Result<()> {
+        match self.space_event.get() {
+            Some(SpaceEvent::WaitConfigure { first, .. }) if first == true => {
+                bail!("Not ready yet!")
+            }
+            _ => {}
+        };
+
         let c_surface = compositor_state.create_surface(qh)?;
 
         let w = self
@@ -605,11 +614,17 @@ impl AppletHostSpace {
                 })
             })
             .cloned();
+
         if let Some(w) = w {
             // TODO is this necessary?
             // self.s_focused_surface.replace(w.toplevel().wl_surface().clone());
-            let dimensions = w.bbox().size;
-
+            let mut dimensions = w.bbox().size;
+            if dimensions.w == 0 {
+                dimensions.w = 1;
+            }
+            if dimensions.h == 0 {
+                dimensions.h = 1;
+            }
             let layer = match self.config().layer(applet_name).unwrap() {
                 zwlr_layer_shell_v1::Layer::Background => layer::Layer::Background,
                 zwlr_layer_shell_v1::Layer::Bottom => layer::Layer::Bottom,
@@ -682,7 +697,7 @@ impl AppletHostSpace {
                 space_event: next_render_event,
                 dimensions,
                 config: self.config.applet(applet_name).unwrap().clone(),
-                to_destroy: false,
+                to_destroy: -1,
             });
             let Kind::Xdg(t) = w.toplevel();
             t.with_pending_state(|t| {
@@ -771,7 +786,13 @@ impl WrapperSpace for AppletHostSpace {
         if !layer.wl_surface().is_alive() {
             return;
         }
-        let (w, h) = configure.new_size;
+        let (mut w, mut h) = configure.new_size;
+        if w == 0 {
+            w = 1;
+        }
+        if h == 0 {
+            h = 1;
+        }
         if self.layer_surface.as_ref() == Some(layer) {
             match self.space_event.take() {
                 Some(e) => match e {
@@ -915,29 +936,33 @@ impl WrapperSpace for AppletHostSpace {
                                 )
                             };
 
-                            let (new_renderer, egl_display) = if let (Some(renderer), Some(egl_display)) = (self.renderer.take(), self.egl_display.take()) {
-                                (renderer, egl_display)
-                            } else {
-                                let egl_display = EGLDisplay::new(&client_egl_surface, log.clone())
-                                .expect("Failed to initialize EGL display");
-                                let egl_context = EGLContext::new_with_config(
-                                    &egl_display,
-                                    GlAttributes {
-                                        version: (3, 0),
-                                        profile: None,
-                                        debug: cfg!(debug_assertions),
-                                        vsync: false,
-                                    },
-                                    Default::default(),
-                                    log.clone(),
-                                )
-                                .expect("Failed to initialize EGL context");
-                                let renderer = unsafe {
-                                    Gles2Renderer::new(egl_context, log.clone())
-                                        .expect("Failed to initialize EGL Surface")
+                            let (new_renderer, egl_display) =
+                                if let (Some(renderer), Some(egl_display)) =
+                                    (self.renderer.take(), self.egl_display.take())
+                                {
+                                    (renderer, egl_display)
+                                } else {
+                                    let egl_display =
+                                        EGLDisplay::new(&client_egl_surface, log.clone())
+                                            .expect("Failed to initialize EGL display");
+                                    let egl_context = EGLContext::new_with_config(
+                                        &egl_display,
+                                        GlAttributes {
+                                            version: (3, 0),
+                                            profile: None,
+                                            debug: cfg!(debug_assertions),
+                                            vsync: false,
+                                        },
+                                        Default::default(),
+                                        log.clone(),
+                                    )
+                                    .expect("Failed to initialize EGL context");
+                                    let renderer = unsafe {
+                                        Gles2Renderer::new(egl_context, log.clone())
+                                            .expect("Failed to initialize EGL Surface")
+                                    };
+                                    (renderer, egl_display)
                                 };
-                                (renderer, egl_display)
-                            };
 
                             let egl_surface = Rc::new(
                                 EGLSurface::new(
@@ -1053,11 +1078,9 @@ impl WrapperSpace for AppletHostSpace {
             bail!("could not find matching window");
         };
 
-        let active_applet = if let Some(a) = self
-            .active_applets
-            .iter_mut()
-            .find(|a| Some(a.s_window.toplevel().wl_surface()) == s_surface.get_parent_surface().as_ref())
-        {
+        let active_applet = if let Some(a) = self.active_applets.iter_mut().find(|a| {
+            Some(a.s_window.toplevel().wl_surface()) == s_surface.get_parent_surface().as_ref()
+        }) {
             a
         } else {
             bail!("could not find matching active applet");
@@ -1197,7 +1220,7 @@ impl WrapperSpace for AppletHostSpace {
                                 if let Ok(entry) = DesktopEntry::decode(&path, &bytes) {
                                     if let Some(exec) = entry.exec() {
                                         let requests_host_wayland_display =
-                                            entry.desktop_entry("HostWaylandDisplay").is_some();
+                                            entry.desktop_entry("X-HostWaylandDisplay").is_some();
                                         return Some(exec_child(
                                             exec,
                                             self.log.as_ref().unwrap().clone(),
@@ -1466,12 +1489,12 @@ impl WrapperSpace for AppletHostSpace {
         if self.s_focused_surface.iter().any(|f| f.1 == seat_name) {
             self.close_popups();
             for a in &mut self.active_applets {
-                let should_remove =  !a.config.hide_on_focus_loss
-                || (!matches!(c_s, None) && Some(a.layer_surface.wl_surface()) != c_s.as_ref())
-                || self
-                    .s_focused_surface
-                    .iter()
-                    .any(|f| f.1 != seat_name || a.s_window.toplevel().wl_surface() != &f.0);
+                let should_remove = !a.config.hide_on_focus_loss
+                    || (!matches!(c_s, None) && Some(a.layer_surface.wl_surface()) != c_s.as_ref())
+                    || self
+                        .s_focused_surface
+                        .iter()
+                        .any(|f| f.1 != seat_name || a.s_window.toplevel().wl_surface() != &f.0);
                 if should_remove {
                     // cleanup
                     let Kind::Xdg(t) = a.s_window.toplevel();
@@ -1479,7 +1502,7 @@ impl WrapperSpace for AppletHostSpace {
                         t.states.unset(xdg_toplevel::State::Activated);
                     });
                     t.send_configure();
-                    a.to_destroy = true;
+                    a.to_destroy = 1;
                 }
             }
             self.s_focused_surface.retain(|f| f.1 != seat_name);
@@ -1499,8 +1522,21 @@ impl WrapperSpace for AppletHostSpace {
                 if let Some(prev_kbd) = prev_kbd {
                     prev_kbd.0 = a.s_window.toplevel().wl_surface().clone();
                 } else {
-                    self.s_focused_surface
-                        .push((a.s_window.toplevel().wl_surface().clone(), seat_name.to_string()));
+                    let mut c_focus = self.c_focused_surface.borrow_mut();
+                    let new_focus = (
+                        a.layer_surface.wl_surface().clone(),
+                        seat_name.to_string(),
+                        FocusStatus::Focused,
+                    );
+                    if let Some(focus) = c_focus.iter_mut().find(|f| f.1 == seat_name) {
+                        *focus = new_focus;
+                    } else {
+                        c_focus.push(new_focus);
+                    }
+                    self.s_focused_surface.push((
+                        a.s_window.toplevel().wl_surface().clone(),
+                        seat_name.to_string(),
+                    ));
                 }
                 Some(a.s_window.toplevel().wl_surface().clone())
             } else {
@@ -1523,7 +1559,6 @@ impl WrapperSpace for AppletHostSpace {
         self.update_pointer(dim, seat_name, surface)
     }
 
-    // TODO fix this
     ///  update active window based on pointer location
     fn update_pointer(
         &mut self,
@@ -1571,34 +1606,36 @@ impl WrapperSpace for AppletHostSpace {
                 self.s_hovered_surface.last().cloned()
             }
         } else {
-            // if not on this panel's client surface exit
-            if !self
+            let hovered_applet = match self
                 .active_applets
                 .iter()
-                .any(|a| a.layer_surface.wl_surface() == &surface)
+                .find(|a| a.layer_surface.wl_surface() == &surface)
             {
-                return None;
-            }
-            if let Some((w, s, p)) = self
-                .space
+                Some(a) => a,
+                None => return None,
+            };
+            if let Some((w, p)) = hovered_applet
+                .s_window
                 .surface_under((x as f64, y as f64), WindowSurfaceType::ALL)
             {
                 if let Some(prev_kbd) = prev_kbd {
-                    prev_kbd.0 = w.toplevel().wl_surface().clone();
+                    prev_kbd.0 = hovered_applet.s_window.toplevel().wl_surface().clone();
                 } else {
-                    self.s_focused_surface
-                        .push((w.toplevel().wl_surface().clone(), seat_name.to_string()));
+                    self.s_focused_surface.push((
+                        hovered_applet.s_window.toplevel().wl_surface().clone(),
+                        seat_name.to_string(),
+                    ));
                 }
                 if let Some((_, prev_foc)) = prev_hover.as_mut() {
                     prev_foc.s_pos = p;
-                    prev_foc.c_pos = w.geometry().loc;
-                    prev_foc.surface = s.clone();
+                    prev_foc.c_pos = hovered_applet.s_window.geometry().loc;
+                    prev_foc.surface = w.clone();
                     Some(prev_foc.clone())
                 } else {
                     self.s_hovered_surface.push(ServerPointerFocus {
-                        surface: s,
+                        surface: w,
                         seat_name: seat_name.to_string(),
-                        c_pos: w.geometry().loc,
+                        c_pos: hovered_applet.s_window.geometry().loc,
                         s_pos: (x, y).into(),
                     });
                     self.s_hovered_surface.last().cloned()
