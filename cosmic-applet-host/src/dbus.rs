@@ -3,12 +3,7 @@ use zbus::dbus_interface;
 
 use event_listener::Event;
 
-#[derive(Debug)]
-pub(crate) enum AppletHostEvent {
-    ToggleName(String),
-    HideName(String),
-    ShowName(String),
-}
+use crate::AppletHostEvent;
 
 #[derive(Debug)]
 pub(crate) struct AppletHostServer {

@@ -18,6 +18,7 @@ use std::{
 use anyhow::bail;
 use freedesktop_desktop_entry::{self, DesktopEntry, Iter};
 use itertools::{izip, Itertools};
+use launch_pad::process::Process;
 use sctk::{
     compositor::{CompositorState, Region},
     output::OutputInfo,
@@ -31,7 +32,7 @@ use sctk::{
         xdg::popup,
     },
 };
-
+use shlex::Shlex;
 use slog::{info, trace, Logger};
 use smithay::{
     backend::{
@@ -59,11 +60,12 @@ use smithay::{
             zwlr_layer_surface_v1,
         },
         wayland_server::{
-            self, protocol::wl_surface::WlSurface as s_WlSurface, Client, DisplayHandle, Resource,
+            self, backend::ClientId, protocol::wl_surface::WlSurface as s_WlSurface, Client,
+            DisplayHandle, Resource,
         },
     },
     utils::{Logical, Physical, Rectangle, Size},
-    wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface},
+    wayland::shell::xdg::{PopupSurface, PositionerState},
 };
 use smithay::{
     desktop::space::RenderZindex,
@@ -72,6 +74,7 @@ use smithay::{
         shell::xdg::SurfaceCachedState,
     },
 };
+use tokio::sync::mpsc;
 use wayland_egl::WlEglSurface;
 use xdg_shell_wrapper::{
     client_state::{ClientFocus, FocusStatus},
@@ -80,10 +83,12 @@ use xdg_shell_wrapper::{
     space::{
         ClientEglSurface, SpaceEvent, Visibility, WrapperPopup, WrapperPopupState, WrapperSpace,
     },
-    util::{exec_child, get_client_sock},
+    util::get_client_sock,
 };
 
 use cosmic_applet_host_config::{AppletConfig, AppletHostConfig};
+
+use crate::AppletMsg;
 
 #[derive(Debug)]
 pub struct ActiveApplet {
@@ -171,11 +176,10 @@ pub struct AppletHostSpace {
     pub(crate) egl_surface: Option<Rc<EGLSurface>>,
 
     pub config: AppletHostConfig,
-    pub log: Option<Logger>,
+    pub log: Logger,
 
     pub(crate) space: Space,
-    pub(crate) clients: Vec<(Client, String)>,
-    pub(crate) children: Vec<Child>,
+    pub(crate) clients: Vec<(String, Client, UnixStream)>,
     pub(crate) last_dirty: Option<Instant>,
     /// focused surface so it can be changed when a window is removed
     pub(crate) c_focused_surface: Rc<RefCell<ClientFocus>>,
@@ -191,19 +195,19 @@ pub struct AppletHostSpace {
     pub(crate) layer_shell_wl_surface: Option<c_wl_surface::WlSurface>,
     pub(crate) layer_surface: Option<LayerSurface>,
     pub(crate) space_event: Rc<Cell<Option<SpaceEvent>>>,
+    pub applet_tx: mpsc::Sender<AppletMsg>,
     active_applets: Vec<ActiveApplet>,
     start: Instant,
 }
 
 impl AppletHostSpace {
     /// create a new space for the cosmic panel
-    pub fn new(config: AppletHostConfig, log: Logger) -> Self {
+    pub fn new(config: AppletHostConfig, log: Logger, applet_tx: mpsc::Sender<AppletMsg>) -> Self {
         Self {
             config,
             space: Space::new(log.clone()),
-            log: Some(log),
+            log: log,
             clients: Default::default(),
-            children: Default::default(),
             last_dirty: Default::default(),
             output: Default::default(),
             display_handle: Default::default(),
@@ -220,6 +224,7 @@ impl AppletHostSpace {
             c_hovered_surface: Default::default(),
             s_focused_surface: Default::default(),
             s_hovered_surface: Default::default(),
+            applet_tx,
         }
     }
 
@@ -264,7 +269,7 @@ impl AppletHostSpace {
             return Ok(());
         };
 
-        let log_clone = self.log.clone().unwrap();
+        let log_clone = self.log.clone();
 
         for active_applet in &mut self.active_applets {
             let w = &active_applet.s_window;
@@ -527,8 +532,8 @@ impl AppletHostSpace {
         self.clients
             .iter()
             .find_map(|c| {
-                if client_id == Some(c.0.id()) {
-                    Some(c.1.clone())
+                if client_id == Some(c.1.id()) {
+                    Some(c.0.clone())
                 } else {
                     None
                 }
@@ -602,10 +607,10 @@ impl AppletHostSpace {
         let w = self
             .clients
             .iter()
-            .find(|c| c.1 == applet_name)
+            .find(|c| c.0 == applet_name)
             .and_then(|active| {
                 self.space.windows().find_map(|w| {
-                    let c_id = active.0.id();
+                    let c_id = active.1.id();
                     if Some(&c_id) == w.toplevel().wl_surface().client_id().as_ref() {
                         Some(w)
                     } else {
@@ -708,6 +713,39 @@ impl AppletHostSpace {
         }
         anyhow::bail!("No client with the requested name!");
     }
+
+    pub fn replace_client(
+        &mut self,
+        id: String,
+        old_client_id: ClientId,
+        client: Client,
+        socket: UnixStream,
+    ) {
+        if let Some((_, s_client, s_socket)) = self
+            .clients
+            .iter_mut()
+            .find(|(c_id, old_client, _)| c_id == &id && old_client_id == old_client.id())
+        {
+            // cleanup leftover windows
+            let w = {
+                self.space
+                    .windows()
+                    .find(|w| w.toplevel().wl_surface().client_id() == Some(s_client.id()))
+                    .cloned()
+            };
+            if let Some(w) = w {
+                self.space.unmap_window(&w);
+            }
+            // TODO Popups?
+
+            *s_client = client;
+            *s_socket = socket;
+            for applet in &mut self.active_applets {
+                applet.full_clear = 4;
+                applet.w_accumulated_damage.clear();
+            }
+        }
+    }
 }
 
 impl WrapperSpace for AppletHostSpace {
@@ -721,19 +759,6 @@ impl WrapperSpace for AppletHostSpace {
     ) -> Instant {
         self.space.refresh(dh);
         popup_manager.cleanup();
-
-        if self
-            .children
-            .iter_mut()
-            .map(|c| c.try_wait())
-            .all(|r| matches!(r, Ok(Some(_))))
-        {
-            info!(
-                self.log.as_ref().unwrap().clone(),
-                "Child processes exited. Now exiting..."
-            );
-            std::process::exit(0);
-        }
         match self.space_event.take() {
             Some(SpaceEvent::Quit) => {
                 // TODO cleanup
@@ -767,7 +792,7 @@ impl WrapperSpace for AppletHostSpace {
                     )
                 });
                 a.handle_events(
-                    self.log.as_ref().unwrap().clone(),
+                    self.log.clone(),
                     self.c_display.as_ref().unwrap(),
                     self.renderer.as_ref().unwrap(),
                     self.egl_display.as_ref().unwrap(),
@@ -855,11 +880,9 @@ impl WrapperSpace for AppletHostSpace {
                                         .expect("Failed to initialize EGL Surface")
                                 }
                             };
-                            if let Some(log) = log.as_ref().cloned() {
-                                trace!(log, "{:?}", unsafe {
-                                    SwapInterval(egl_display.get_display_handle().handle, 0)
-                                });
-                            }
+                            trace!(self.log.clone(), "{:?}", unsafe {
+                                SwapInterval(egl_display.get_display_handle().handle, 0)
+                            });
 
                             let egl_surface = Rc::new(
                                 EGLSurface::new(
@@ -922,7 +945,7 @@ impl WrapperSpace for AppletHostSpace {
                             height = h as i32;
                         }
                         if first {
-                            let log = self.log.clone().unwrap();
+                            let log = self.log.clone();
                             let client_egl_surface = unsafe {
                                 ClientEglSurface::new(
                                     WlEglSurface::new(
@@ -1128,17 +1151,15 @@ impl WrapperSpace for AppletHostSpace {
         )?;
 
         let input_region = Region::new(compositor_state)?;
+        let opaque_region = Region::new(compositor_state)?;
 
-        if let (Some(s_window_geometry), Some(input_regions)) =
+        if let (Some(s_window_geometry), Some(input_regions), Some(opaque_regions)) =
             with_states(s_surface.wl_surface(), |states| {
+                let s_attr = states.cached_state.current::<SurfaceAttributes>();
                 (
                     states.cached_state.current::<SurfaceCachedState>().geometry,
-                    states
-                        .cached_state
-                        .current::<SurfaceAttributes>()
-                        .input_region
-                        .as_ref()
-                        .cloned(),
+                    s_attr.input_region.clone(),
+                    s_attr.opaque_region.clone(),
                 )
             })
         {
@@ -1149,9 +1170,23 @@ impl WrapperSpace for AppletHostSpace {
                 s_window_geometry.size.h,
             );
             for r in input_regions.rects {
-                input_region.add(0, 0, r.1.size.w, r.1.size.h);
+                input_region.add(
+                    s_window_geometry.loc.x,
+                    s_window_geometry.loc.y,
+                    r.1.size.w,
+                    r.1.size.h,
+                );
+            }
+            for r in opaque_regions.rects {
+                opaque_region.add(
+                    s_window_geometry.loc.x,
+                    s_window_geometry.loc.y,
+                    r.1.size.w,
+                    r.1.size.h,
+                );
             }
             c_wl_surface.set_input_region(Some(input_region.wl_region()));
+            c_wl_surface.set_opaque_region(Some(opaque_region.wl_region()));
         }
 
         active_applet.layer_surface.get_popup(c_popup.xdg_popup());
@@ -1172,6 +1207,7 @@ impl WrapperSpace for AppletHostSpace {
             full_clear: 4,
             state: cur_popup_state,
             input_region,
+            opaque_region,
         });
         Ok(())
     }
@@ -1192,57 +1228,100 @@ impl WrapperSpace for AppletHostSpace {
         self.config.clone()
     }
 
-    fn spawn_clients(
-        &mut self,
-        mut display: DisplayHandle,
-    ) -> Result<Vec<UnixStream>, anyhow::Error> {
-        if self.children.is_empty() {
-            let (clients, sockets): (Vec<_>, Vec<_>) = self
+    fn spawn_clients(&mut self, mut display: DisplayHandle) -> anyhow::Result<()> {
+        if self.clients.is_empty() {
+            self.clients = self
                 .config
                 .applets
                 .iter()
-                .map(|a| {
+                .map(|id| {
                     let (c, s) = get_client_sock(&mut display);
-                    ((c, a.name.clone()), s)
+                    (id.name.clone(), c, s)
                 })
-                .unzip();
-            self.clients = clients;
-            self.children = Iter::new(freedesktop_desktop_entry::default_paths())
-                .filter_map(|path| {
-                    self.clients
-                        .iter()
-                        .zip(&sockets)
-                        .find(|((_, app_file_name), _)| {
-                            Some(OsString::from(&app_file_name).as_os_str()) == path.file_stem()
-                        })
-                        .and_then(|(_, client_socket)| {
-                            fs::read_to_string(&path).ok().and_then(|bytes| {
-                                if let Ok(entry) = DesktopEntry::decode(&path, &bytes) {
-                                    if let Some(exec) = entry.exec() {
-                                        let requests_host_wayland_display =
-                                            entry.desktop_entry("X-HostWaylandDisplay").is_some();
-                                        return Some(exec_child(
-                                            exec,
-                                            self.log.as_ref().unwrap().clone(),
-                                            client_socket.as_raw_fd(),
-                                            vec![],
-                                            requests_host_wayland_display,
-                                        ));
-                                    }
-                                }
-                                None
-                            })
-                        })
-                })
-                .collect_vec();
+                .collect();
 
-            Ok(sockets)
+            let mut desktop_ids = self.clients.iter().collect_vec();
+
+            for path in Iter::new(freedesktop_desktop_entry::default_paths()) {
+                if let Some(position) = desktop_ids.iter().position(|(app_file_name, _, _)| {
+                    Some(OsString::from(app_file_name).as_os_str()) == path.file_stem()
+                }) {
+                    // This way each applet is at most started once,
+                    // even if multiple desktop files in different directories match
+                    let (id, client, socket) = desktop_ids.remove(position);
+                    if let Ok(bytes) = fs::read_to_string(&path) {
+                        if let Ok(entry) = DesktopEntry::decode(&path, &bytes) {
+                            if let Some(exec) = entry.exec() {
+                                let mut exec_iter = Shlex::new(exec);
+                                let exec = exec_iter
+                                    .next()
+                                    .expect("exec parameter must contain at least on word");
+
+                                let mut args = Vec::new();
+                                for arg in exec_iter {
+                                    trace!(self.log.clone(), "child argument: {}", &arg);
+                                    args.push(arg);
+                                }
+                                let mut applet_env = Vec::new();
+                                if entry.desktop_entry("X-HostWaylandDisplay").is_none() {
+                                    applet_env.push(("WAYLAND_DISPLAY", ""));
+                                }
+                                let fd = socket.as_raw_fd().to_string();
+                                applet_env.push(("WAYLAND_SOCKET", fd.as_str()));
+                                trace!(
+                                    self.log.clone(),
+                                    "child: {}, {:?} {:?}",
+                                    &exec,
+                                    args,
+                                    applet_env
+                                );
+
+                                let log_clone = self.log.clone();
+                                let display_handle = display.clone();
+                                let applet_tx_clone = self.applet_tx.clone();
+                                let id_clone = id.clone();
+                                let client_id = client.id();
+                                let process = Process::new()
+                                .with_executable(&exec)
+                                .with_args(args)
+                                .with_env(applet_env)
+                                .with_on_exit(move |mut pman, key, err_code, is_restarting| {
+                                    let log_clone = log_clone.clone();
+                                    let mut display_handle = display_handle.clone();
+                                    let id_clone = id_clone.clone();
+                                    let client_id_clone = client_id.clone();
+                                    let applet_tx_clone = applet_tx_clone.clone();
+
+                                    let (c, s) = get_client_sock(&mut display_handle);
+                                    async move {
+                                        if !is_restarting {
+                                            if let Some(err_code) = err_code {
+                                                slog::error!(log_clone, "Exited with error code and will not restart! {}", err_code);
+                                            }
+                                            return;
+                                        }
+                                        let fd = s.as_raw_fd().to_string();
+                                        let _ = applet_tx_clone.send(AppletMsg::ClientSocketPair(id_clone, client_id_clone, c, s)).await;
+                                        let _ = pman.update_process_env(&key, vec![("WAYLAND_SOCKET", fd.as_str())]).await;
+                                    }
+                                });
+                                // TODO error handling
+                                match self.applet_tx.try_send(AppletMsg::NewProcess(process)) {
+                                    Ok(_) => {}
+                                    Err(e) => slog::error!(self.log.clone(), "{}", e),
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
         } else {
             bail!("Clients have already been spawned!");
         }
     }
 
-    fn handle_output<W: WrapperSpace>(
+    fn new_output<W: WrapperSpace>(
         &mut self,
         compositor_state: &sctk::compositor::CompositorState,
         layer_state: &mut LayerState,
@@ -1305,7 +1384,7 @@ impl WrapperSpace for AppletHostSpace {
     }
 
     fn log(&self) -> Option<Logger> {
-        self.log.clone()
+        Some(self.log.clone())
     }
 
     fn destroy(&mut self) {
@@ -1423,26 +1502,42 @@ impl WrapperSpace for AppletHostSpace {
                     p_geo.size.w,
                     p_geo.size.h,
                 );
-                if let Some(input_regions) = with_states(p.s_surface.wl_surface(), |states| {
-                    states
-                        .cached_state
-                        .current::<SurfaceAttributes>()
-                        .input_region
-                        .as_ref()
-                        .cloned()
-                }) {
+                if let (Some(loc), Some(input_regions), Some(opaque_regions)) =
+                    with_states(p.s_surface.wl_surface(), |states| {
+                        let s_attr = states.cached_state.current::<SurfaceAttributes>();
+                        (
+                            states
+                                .cached_state
+                                .current::<SurfaceCachedState>()
+                                .geometry
+                                .map(|g| g.loc),
+                            s_attr.input_region.clone(),
+                            s_attr.opaque_region.clone(),
+                        )
+                    })
+                {
                     p.input_region.subtract(
                         p_bbox.loc.x,
                         p_bbox.loc.y,
                         p_bbox.size.w,
                         p_bbox.size.h,
                     );
+                    p.opaque_region.subtract(
+                        p_bbox.loc.x,
+                        p_bbox.loc.y,
+                        p_bbox.size.w,
+                        p_bbox.size.h,
+                    );
                     for r in input_regions.rects {
-                        p.input_region
-                            .add(r.1.loc.x, r.1.loc.y, r.1.size.w, r.1.size.h);
+                        p.input_region.add(loc.x, loc.y, r.1.size.w, r.1.size.h);
+                    }
+                    for r in opaque_regions.rects {
+                        p.opaque_region.add(loc.x, loc.y, r.1.size.w, r.1.size.h);
                     }
                     p.c_wl_surface
                         .set_input_region(Some(p.input_region.wl_region()));
+                    p.c_wl_surface
+                        .set_opaque_region(Some(p.opaque_region.wl_region()));
                 }
                 p.state.replace(WrapperPopupState::Rectangle {
                     x: p_bbox.loc.x,
@@ -1479,8 +1574,8 @@ impl WrapperSpace for AppletHostSpace {
         qh: &QueueHandle<GlobalState<W>>,
     ) {
         self.c_display.replace(conn.display());
-        let _ = self.handle_output(compositor_state, layer_state, conn, qh, None, None, None);
-
+        let _ = self.new_output(compositor_state, layer_state, conn, qh, None, None, None);
+        let _ = self.spawn_clients(self.display_handle.clone().unwrap());
         // self.handle_output(dh.clone(), &env, None, None, None)
         // .unwrap();
     }
@@ -1651,11 +1746,22 @@ impl WrapperSpace for AppletHostSpace {
 
     fn output_leave(
         &mut self,
-        _c_output: Option<c_wl_output::WlOutput>,
-        _s_output: Option<Output>,
-        _info: Option<OutputInfo>,
+        c_output: c_wl_output::WlOutput,
+        _s_output: Output,
     ) -> anyhow::Result<()> {
-        bail!("TODO")
+        if self
+            .output
+            .as_ref()
+            .map(|(o, _, _)| o == &c_output)
+            .unwrap_or_default()
+        {
+            return Ok(());
+        }
+        self.output.take();
+        self.egl_surface.take();
+        self.layer_surface.take();
+        self.active_applets.clear();
+        Ok(())
     }
 
     fn configure_popup(
@@ -1694,5 +1800,15 @@ impl WrapperSpace for AppletHostSpace {
 
     fn get_client_hovered_surface(&self) -> Rc<RefCell<ClientFocus>> {
         self.c_hovered_surface.clone()
+    }
+
+    fn update_output(
+        &mut self,
+        c_output: c_wl_output::WlOutput,
+        s_output: Output,
+        info: OutputInfo,
+    ) -> anyhow::Result<()> {
+        // TODO
+        Ok(())
     }
 }

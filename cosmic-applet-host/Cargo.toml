@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-smithay = { git = "https://github.com/smithay/smithay", default-features = false, features = ["use_system_lib", "desktop", "backend_egl", "backend_drm", "renderer_gl", "slog-stdlog"]}
+smithay = { git = "https://github.com/smithay/smithay", default-features = false, features = ["use_system_lib", "desktop", "backend_egl", "backend_drm", "renderer_gl", "slog-stdlog"], rev = "355513d3f675dbf5c61196cd98f5134bba53582c"}
 # smithay = { path = "../../smithay", default-features = false, features = ["use_system_lib", "desktop", "backend_egl", "backend_drm", "renderer_gl", "slog-stdlog"] }
 sctk = { git = "https://github.com/wash2/client-toolkit", package = "smithay-client-toolkit", branch = "get_popup" }
 # sctk = { package = "smithay-client-toolkit", path = "../../client-toolkit", default-features = false, features = ["calloop"] }
@@ -12,6 +12,7 @@ wayland-egl = { git = "https://github.com/smithay/wayland-rs", rev = "f4740097ba
 cosmic-applet-host-config = { path = "../cosmic-applet-host-config" }
 # xdg-shell-wrapper = { path = "../../xdg-shell-wrapper" }
 # xdg-shell-wrapper-config = { path = "../../xdg-shell-wrapper/xdg-shell-wrapper-config" }
+launch-pad = { git = "https://github.com/pop-os/launch-pad.git" }
 xdg-shell-wrapper = { git = "https://github.com/pop-os/xdg-shell-wrapper", branch = "master_jammy" }
 xdg-shell-wrapper-config = { git = "https://github.com/pop-os/xdg-shell-wrapper", branch = "master_jammy" }
 anyhow = "1.0.53"
@@ -27,3 +28,4 @@ xdg = "2.4.0"
 itertools = "0.10.3"
 zbus = "3.0.0"
 event-listener = "2.5.2"
+tokio = { version = "1", features = ["process", "sync", "rt", "rt-multi-thread", "macros", "io-util", "time"] }

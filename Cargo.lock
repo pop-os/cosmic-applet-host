@@ -193,6 +193,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 
 [[package]]
+name = "bytes"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec8a7b6a70fde80372154c65702f00a0f56f3e1c36abbc6c440484be248856db"
+
+[[package]]
 name = "cache-padded"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -251,6 +257,7 @@ dependencies = [
  "event-listener",
  "freedesktop-desktop-entry",
  "itertools",
+ "launch-pad",
  "libc",
  "shlex",
  "slog",
@@ -260,6 +267,7 @@ dependencies = [
  "slog-term",
  "smithay",
  "smithay-client-toolkit",
+ "tokio",
  "wayland-egl",
  "xdg",
  "xdg-shell-wrapper",
@@ -634,6 +642,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "launch-pad"
+version = "0.1.0"
+source = "git+https://github.com/pop-os/launch-pad.git#2f81ce4ab3d52f52dbe7df20dc418fbec1a92d1a"
+dependencies = [
+ "log",
+ "slotmap",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -727,6 +747,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
+name = "mio"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57ee1c23c7c63b0c9250c339ffdc69255f110b298b901b9f6c82547b7b87caaf"
+dependencies = [
+ "libc",
+ "log",
+ "wasi",
+ "windows-sys",
+]
+
+[[package]]
 name = "nix"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -755,6 +787,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "578ede34cf02f8924ab9447f50c28075b4d3e5b269972345e7e0372b38c6cdcd"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "num_cpus"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19e64526ebdee182341572e50e9ad03965aa510cd94427a4549448f285e957a1"
+dependencies = [
+ "hermit-abi",
+ "libc",
 ]
 
 [[package]]
@@ -1080,6 +1122,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43b2853a4d09f215c24cc5489c992ce46052d359b5109343cbafbf26bc62f8a3"
 
 [[package]]
+name = "signal-hook-registry"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e51e73328dc4ac0c7ccbda3a494dfa03df1de2f46018127f60c693f2648455b0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1159,7 +1210,7 @@ checksum = "2fd0db749597d91ff862fd1d55ea87f7855a744a8425a64695b6fca237d1dad1"
 [[package]]
 name = "smithay"
 version = "0.3.0"
-source = "git+https://github.com/smithay/smithay#355513d3f675dbf5c61196cd98f5134bba53582c"
+source = "git+https://github.com/smithay/smithay?rev=355513d3f675dbf5c61196cd98f5134bba53582c#355513d3f675dbf5c61196cd98f5134bba53582c"
 dependencies = [
  "appendlist",
  "bitflags",
@@ -1323,6 +1374,49 @@ name = "time-macros"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42657b1a6f4d817cda8e7a0ace261fe0cc946cf3a80314390b22cc61ae080792"
+
+[[package]]
+name = "tokio"
+version = "1.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0020c875007ad96677dcc890298f4b942882c5d4eb7cc8f439fc3bf813dc9c95"
+dependencies = [
+ "autocfg",
+ "bytes",
+ "libc",
+ "memchr",
+ "mio",
+ "num_cpus",
+ "once_cell",
+ "pin-project-lite",
+ "signal-hook-registry",
+ "tokio-macros",
+ "winapi",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9724f9a975fb987ef7a3cd9be0350edcbe130698af5b8f7a631e23d42d052484"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bb2e075f03b3d66d8d8785356224ba688d2906a371015e225beeb65ca92c740"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "pin-project-lite",
+ "tokio",
+]
 
 [[package]]
 name = "toml"
@@ -1620,7 +1714,7 @@ dependencies = [
 [[package]]
 name = "xdg-shell-wrapper"
 version = "0.1.0"
-source = "git+https://github.com/pop-os/xdg-shell-wrapper?branch=master_jammy#1a0f718203a734ed78089414b1a82e92f16c04d9"
+source = "git+https://github.com/pop-os/xdg-shell-wrapper?branch=master_jammy#2e82a6395912921609fa8a096eca13eed665d53f"
 dependencies = [
  "anyhow",
  "itertools",
@@ -1640,7 +1734,7 @@ dependencies = [
 [[package]]
 name = "xdg-shell-wrapper-config"
 version = "0.1.0"
-source = "git+https://github.com/pop-os/xdg-shell-wrapper?branch=master_jammy#1a0f718203a734ed78089414b1a82e92f16c04d9"
+source = "git+https://github.com/pop-os/xdg-shell-wrapper?branch=master_jammy#2e82a6395912921609fa8a096eca13eed665d53f"
 dependencies = [
  "serde",
  "wayland-protocols-wlr",
