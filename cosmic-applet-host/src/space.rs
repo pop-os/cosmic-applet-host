@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0-only
 
 use std::{
-    borrow::Borrow,
     cell::{Cell, RefCell},
     default::Default,
     ffi::OsString,
     fs,
-    os::{
-        raw::c_int,
-        unix::{net::UnixStream, prelude::AsRawFd},
-    },
-    process::Child,
+    os::unix::{net::UnixStream, prelude::AsRawFd},
     rc::Rc,
     time::Instant,
 };
@@ -33,16 +28,13 @@ use sctk::{
     },
 };
 use shlex::Shlex;
-use slog::{info, trace, Logger};
+use slog::{trace, Logger};
 use smithay::{
     backend::{
         egl::{
             context::{EGLContext, GlAttributes},
             display::EGLDisplay,
-            ffi::{
-                self,
-                egl::{GetConfigAttrib, SwapInterval},
-            },
+            ffi::egl::SwapInterval,
             surface::EGLSurface,
         },
         renderer::{gles2::Gles2Renderer, utils::draw_surface_tree, Bind, Frame, Renderer, Unbind},
@@ -860,17 +852,20 @@ impl WrapperSpace for AppletHostSpace {
                                 Default::default(),
                                 log.clone(),
                             )
-                            .expect("Failed to initialize EGL context");
-
-                            let mut min_interval_attr = 23239;
-                            unsafe {
-                                GetConfigAttrib(
-                                    egl_display.get_display_handle().handle,
-                                    egl_context.config_id(),
-                                    ffi::egl::MIN_SWAP_INTERVAL as c_int,
-                                    &mut min_interval_attr,
-                                );
-                            }
+                            .unwrap_or_else(|_| {
+                                EGLContext::new_with_config(
+                                    &egl_display,
+                                    GlAttributes {
+                                        version: (2, 0),
+                                        profile: None,
+                                        debug: cfg!(debug_assertions),
+                                        vsync: false,
+                                    },
+                                    Default::default(),
+                                    log.clone(),
+                                )
+                                .expect("Failed to create EGL context")
+                            });
 
                             let new_renderer = if let Some(renderer) = self.renderer.take() {
                                 renderer
@@ -1804,9 +1799,9 @@ impl WrapperSpace for AppletHostSpace {
 
     fn update_output(
         &mut self,
-        c_output: c_wl_output::WlOutput,
-        s_output: Output,
-        info: OutputInfo,
+        _c_output: c_wl_output::WlOutput,
+        _s_output: Output,
+        _info: OutputInfo,
     ) -> anyhow::Result<()> {
         // TODO
         Ok(())
