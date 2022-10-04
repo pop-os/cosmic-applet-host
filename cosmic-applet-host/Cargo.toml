@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-smithay = { git = "https://github.com/smithay/smithay", default-features = false, features = ["use_system_lib", "desktop", "backend_egl", "backend_drm", "renderer_gl", "slog-stdlog"], rev = "355513d3f675dbf5c61196cd98f5134bba53582c"}
-# smithay = { path = "../../smithay", default-features = false, features = ["use_system_lib", "desktop", "backend_egl", "backend_drm", "renderer_gl", "slog-stdlog"] }
-sctk = { git = "https://github.com/wash2/client-toolkit", package = "smithay-client-toolkit", branch = "get_popup" }
-# sctk = { package = "smithay-client-toolkit", path = "../../client-toolkit", default-features = false, features = ["calloop"] }
-wayland-egl = { git = "https://github.com/smithay/wayland-rs", rev = "f4740097ba42b1ec5d439c82eff4e748e38178d2" }
+smithay = { git = "https://github.com/smithay/smithay", default-features = false, features = ["use_system_lib", "desktop", "backend_egl", "backend_drm", "renderer_gl", "slog-stdlog"], rev = "76a878698ea1910607e866519b0f5999f1e66caa"}
+# smithay = { path = "../smithay", default-features = false, features = ["use_system_lib", "desktop", "backend_egl", "backend_drm", "renderer_gl", "slog-stdlog"] }
+sctk = { git = "https://github.com/wash2/client-toolkit", package = "smithay-client-toolkit", branch = "dev" }
+# sctk = { package = "smithay-client-toolkit", path = "../fork/client-toolkit", default-features = false, features = ["calloop", "xkbcommon", "system"] }
+wayland-egl = { version = "=0.30.0-beta.10" }
 cosmic-applet-host-config = { path = "../cosmic-applet-host-config" }
 # xdg-shell-wrapper = { path = "../../xdg-shell-wrapper" }
 # xdg-shell-wrapper-config = { path = "../../xdg-shell-wrapper/xdg-shell-wrapper-config" }

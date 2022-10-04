@@ -838,8 +838,9 @@ impl WrapperSpace for AppletHostSpace {
                                     self.layer_shell_wl_surface.as_ref().unwrap().clone(),
                                 )
                             };
-                            let egl_display = EGLDisplay::new(&client_egl_surface, log.clone())
-                                .expect("Failed to initialize EGL display");
+                            let egl_display =
+                                unsafe { EGLDisplay::new(&client_egl_surface, log.clone()) }
+                                    .expect("Failed to initialize EGL display");
 
                             let egl_context = EGLContext::new_with_config(
                                 &egl_display,
@@ -960,9 +961,10 @@ impl WrapperSpace for AppletHostSpace {
                                 {
                                     (renderer, egl_display)
                                 } else {
-                                    let egl_display =
+                                    let egl_display = unsafe {
                                         EGLDisplay::new(&client_egl_surface, log.clone())
-                                            .expect("Failed to initialize EGL display");
+                                    }
+                                    .expect("Failed to initialize EGL display");
                                     let egl_context = EGLContext::new_with_config(
                                         &egl_display,
                                         GlAttributes {
@@ -1202,7 +1204,6 @@ impl WrapperSpace for AppletHostSpace {
             full_clear: 4,
             state: cur_popup_state,
             input_region,
-            opaque_region,
         });
         Ok(())
     }
@@ -1497,7 +1498,7 @@ impl WrapperSpace for AppletHostSpace {
                     p_geo.size.w,
                     p_geo.size.h,
                 );
-                if let (Some(loc), Some(input_regions), Some(opaque_regions)) =
+                if let (Some(loc), Some(input_regions)) =
                     with_states(p.s_surface.wl_surface(), |states| {
                         let s_attr = states.cached_state.current::<SurfaceAttributes>();
                         (
@@ -1507,7 +1508,6 @@ impl WrapperSpace for AppletHostSpace {
                                 .geometry
                                 .map(|g| g.loc),
                             s_attr.input_region.clone(),
-                            s_attr.opaque_region.clone(),
                         )
                     })
                 {
@@ -1517,22 +1517,11 @@ impl WrapperSpace for AppletHostSpace {
                         p_bbox.size.w,
                         p_bbox.size.h,
                     );
-                    p.opaque_region.subtract(
-                        p_bbox.loc.x,
-                        p_bbox.loc.y,
-                        p_bbox.size.w,
-                        p_bbox.size.h,
-                    );
                     for r in input_regions.rects {
                         p.input_region.add(loc.x, loc.y, r.1.size.w, r.1.size.h);
                     }
-                    for r in opaque_regions.rects {
-                        p.opaque_region.add(loc.x, loc.y, r.1.size.w, r.1.size.h);
-                    }
                     p.c_wl_surface
                         .set_input_region(Some(p.input_region.wl_region()));
-                    p.c_wl_surface
-                        .set_opaque_region(Some(p.opaque_region.wl_region()));
                 }
                 p.state.replace(WrapperPopupState::Rectangle {
                     x: p_bbox.loc.x,
