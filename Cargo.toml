@@ -5,3 +5,7 @@ members = [
     "cosmic-applet-host",
     "cosmic-applet-host-config"
 ]
+
+[patch.crates-io]
+xkbcommon = { git = "https://github.com/rust-x-bindings/xkbcommon-rs", rev = "4e491bee" }
+
